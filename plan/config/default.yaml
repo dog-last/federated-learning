@@ -1,0 +1,62 @@
+# 默认配置
+
+# 模型配置
+model:
+  name: "simple_cnn"
+  input_channels: 3
+  num_classes: 10
+
+# 数据集配置
+dataset:
+  name: "cifar10"
+  data_dir: "./data"
+  num_clients: 3
+  partition_strategy: "iid"  # iid | non_iid
+  alpha: 0.5  # non-iid 参数
+
+# 训练配置
+training:
+  rounds: 10
+  epochs_per_round: 2
+  learning_rate: 0.01
+  batch_size: 32
+  momentum: 0.9
+  weight_decay: 0.0001
+
+# 网络配置
+network:
+  mode: "centralized"  # centralized | decentralized
+  host: "127.0.0.1"
+  port: 9000
+
+  # 超时配置
+  connect_timeout: 10.0
+  send_timeout: 30.0
+  recv_timeout: 30.0
+  round_timeout: 60.0
+
+# P2P配置（去中心化模式）
+p2p:
+  topology: "ring"
+  heartbeat_interval: 5.0
+  heartbeat_timeout: 10.0
+  retry_count: 3
+  retry_delay: 1.0
+
+# 聚合配置
+aggregator:
+  name: "fedavg"  # fedavg | fedprox
+  fedprox_mu: 0.01  # FedProx参数
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG | INFO | WARNING | ERROR
+  log_dir: "./logs"
+  console_output: true
+  file_output: true
+
+# 输出配置
+output:
+  checkpoint_dir: "./outputs/checkpoints"
+  figure_dir: "./outputs/figures"
+  save_checkpoint_every: 5  # 每N轮保存一次
