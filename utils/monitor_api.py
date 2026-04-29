@@ -156,6 +156,21 @@ class ProgressRenderer:
         with open(self.key_log_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
 
+    def _broadcast_event(self, item: dict):
+        if not self.ws_clients or self._ws_loop is None:
+            return
+        payload = json.dumps(item, ensure_ascii=False, default=str)
+        async def _send():
+            dead = []
+            for ws in self.ws_clients:
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self.ws_clients.discard(ws)
+        asyncio.run_coroutine_threadsafe(_send(), self._ws_loop)
+
     def _load_render_mode(self):
         env_mode = os.environ.get("MONITOR_RENDER_MODE")
         if env_mode:
@@ -322,6 +337,7 @@ class ProgressRenderer:
             if self.live is not None:
                 self.live.stop()
                 self.live = None
+            self.ws_clients.clear()
 
     def _close_client_bars(self):
         return
@@ -840,6 +856,7 @@ def _append_event_sync(item):
         logs.append(item)
         _update_summary(item)
     progress_renderer.handle(item)
+    progress_renderer._broadcast_event(item)
 
 
 def _emit_control_event(item):
