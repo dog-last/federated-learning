@@ -1,4 +1,5 @@
 """Unit tests for monitor_api module (pure functions only, no server startup)."""
+import asyncio
 import copy
 import pytest
 from unittest.mock import patch
@@ -7,6 +8,8 @@ from utils.monitor_api import (
     _fmt_float, _fmt_seconds, _fmt_int, _fmt_bytes, _fmt_rate,
     _apply_config_patch, _editable_field_schema,
     _update_summary, _summary_snapshot, _clear_monitor_state,
+    _get_state_snapshot, _get_metrics_history, _collect_metrics,
+    _append_event_sync,
     progress_renderer,
 )
 
@@ -391,3 +394,63 @@ def test_web_mode_disables_rich_rendering():
         progress_renderer.live_rendering = progress_renderer.render_mode not in {"plain", "web"} and progress_renderer.console.is_terminal
     assert progress_renderer.render_mode == "web"
     assert progress_renderer.live_rendering is False
+
+
+class TestWebSocketBroadcast:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+
+    def test_ws_clients_exists(self):
+        assert hasattr(progress_renderer, 'ws_clients')
+        assert isinstance(progress_renderer.ws_clients, set)
+
+    def test_broadcast_event_no_crash_without_clients(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.ws_clients = set()
+        progress_renderer._ws_loop = None
+        progress_renderer._broadcast_event({"event_type": "test", "source": "unit_test"})
+
+    def test_broadcast_event_with_loop_but_no_clients(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.ws_clients = set()
+        progress_renderer._ws_loop = asyncio.new_event_loop()
+        progress_renderer._broadcast_event({"event_type": "test", "source": "unit_test"})
+        progress_renderer._ws_loop.close()
+        progress_renderer._ws_loop = None
+
+
+class TestStateSnapshot:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+
+    def test_state_snapshot_structure(self):
+        progress_renderer.phase = "training"
+        progress_renderer.mode = "centralized"
+        progress_renderer.current_round = 3
+        progress_renderer.epoch_total = 10
+        state = _get_state_snapshot()
+        assert state["phase"] == "training"
+        assert state["mode"] == "centralized"
+        assert state["current_round"] == 3
+        assert state["epoch_total"] == 10
+        assert "clients" in state
+        assert "key_events" in state
+        assert "source_net_totals" in state
+
+    def test_metrics_history_empty(self):
+        history = _get_metrics_history()
+        assert history["rounds"] == []
+        assert history["train_loss"] == []
+        assert "per_client" in history
+
+    def test_metrics_history_collects_round_end(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.epoch_total = 3
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.3, "test_acc": 0.3, "train_loss": 2.5, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.5, "test_acc": 0.5, "train_loss": 1.8, "train_acc": 0.4})
+        history = _get_metrics_history()
+        assert history["rounds"] == [1, 2]
+        assert history["test_loss"] == [2.3, 1.5]
+        assert history["test_acc"] == [0.3, 0.5]

@@ -695,6 +695,14 @@ def _clear_monitor_state():
         summary["network"]["bytes_sent"] = 0
         summary["network"]["bytes_recv"] = 0
         summary["network"]["by_label"].clear()
+        metrics_history["rounds"].clear()
+        metrics_history["train_loss"].clear()
+        metrics_history["train_acc"].clear()
+        metrics_history["val_loss"].clear()
+        metrics_history["val_acc"].clear()
+        metrics_history["test_loss"].clear()
+        metrics_history["test_acc"].clear()
+        metrics_history["per_client"].clear()
     progress_renderer.reset()
 
 
@@ -851,12 +859,94 @@ def _summary_snapshot():
     }
 
 
+def _get_state_snapshot():
+    with lock:
+        return {
+            "phase": progress_renderer.phase,
+            "mode": progress_renderer.mode,
+            "current_round": progress_renderer.current_round,
+            "epoch_total": progress_renderer.epoch_total,
+            "epoch_progress": progress_renderer.epoch_progress,
+            "batch_progress": progress_renderer.current_round_pct,
+            "avg_round_time": progress_renderer._avg(progress_renderer.round_durations) if progress_renderer.round_durations else None,
+            "avg_wait_time": progress_renderer._avg(progress_renderer.wait_durations) if progress_renderer.wait_durations else None,
+            "avg_xfer_time": progress_renderer._avg(progress_renderer.transport_durations) if progress_renderer.transport_durations else None,
+            "total_bytes_sent": progress_renderer.total_bytes_sent,
+            "total_bytes_recv": progress_renderer.total_bytes_recv,
+            "last_loss": progress_renderer.last_round_loss,
+            "last_acc": progress_renderer.last_round_acc,
+            "clients": dict(progress_renderer.client_states),
+            "key_events": list(progress_renderer.key_events),
+            "source_net_totals": {k: dict(v) for k, v in progress_renderer.source_net_totals.items()},
+        }
+
+
+def _collect_metrics(item):
+    event_type = item.get("event_type", "")
+    if event_type == "round_end":
+        round_id = int(item.get("round", 0) or 0)
+        if round_id not in metrics_history["rounds"]:
+            metrics_history["rounds"].append(round_id)
+            metrics_history["train_loss"].append(item.get("train_loss"))
+            metrics_history["train_acc"].append(item.get("train_acc"))
+            metrics_history["val_loss"].append(item.get("val_loss"))
+            metrics_history["val_acc"].append(item.get("val_acc"))
+            metrics_history["test_loss"].append(item.get("test_loss"))
+            metrics_history["test_acc"].append(item.get("test_acc"))
+    elif event_type == "ring_global_eval":
+        round_id = int(item.get("round", 0) or 0)
+        if round_id not in metrics_history["rounds"]:
+            metrics_history["rounds"].append(round_id)
+            metrics_history["train_loss"].append(item.get("train_loss"))
+            metrics_history["train_acc"].append(item.get("train_acc"))
+            metrics_history["val_loss"].append(item.get("val_loss"))
+            metrics_history["val_acc"].append(item.get("val_acc"))
+            metrics_history["test_loss"].append(item.get("test_loss"))
+            metrics_history["test_acc"].append(item.get("test_acc"))
+    elif event_type == "local_round_done":
+        client_id = item.get("client_id") or item.get("source", "")
+        if client_id:
+            pc = metrics_history["per_client"][client_id]
+            round_id = int(item.get("round", 0) or 0)
+            if round_id not in pc["rounds"]:
+                pc["rounds"].append(round_id)
+                pc["train_loss"].append(item.get("train_loss"))
+                pc["train_acc"].append(item.get("train_acc"))
+                pc["val_loss"].append(item.get("val_loss"))
+                pc["val_acc"].append(item.get("val_acc"))
+                pc["test_loss"].append(item.get("test_loss"))
+                pc["test_acc"].append(item.get("test_acc"))
+    elif event_type == "metric" and item.get("type") == "global_eval":
+        round_id = progress_renderer.current_round
+        if metrics_history["rounds"] and metrics_history["rounds"][-1] == round_id:
+            idx = len(metrics_history["rounds"]) - 1
+            if item.get("test_loss") is not None:
+                metrics_history["test_loss"][idx] = item.get("test_loss")
+            if item.get("test_acc") is not None:
+                metrics_history["test_acc"][idx] = item.get("test_acc")
+
+
+def _get_metrics_history():
+    with lock:
+        return {
+            "rounds": list(metrics_history["rounds"]),
+            "train_loss": list(metrics_history["train_loss"]),
+            "train_acc": list(metrics_history["train_acc"]),
+            "val_loss": list(metrics_history["val_loss"]),
+            "val_acc": list(metrics_history["val_acc"]),
+            "test_loss": list(metrics_history["test_loss"]),
+            "test_acc": list(metrics_history["test_acc"]),
+            "per_client": {k: dict(v) for k, v in metrics_history["per_client"].items()},
+        }
+
+
 def _append_event_sync(item):
     with lock:
         logs.append(item)
         _update_summary(item)
     progress_renderer.handle(item)
     progress_renderer._broadcast_event(item)
+    _collect_metrics(item)
 
 
 def _emit_control_event(item):
@@ -893,6 +983,25 @@ async def on_startup():
             pass
 
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    progress_renderer.ws_clients.add(websocket)
+    if progress_renderer._ws_loop is None:
+        progress_renderer._ws_loop = asyncio.get_event_loop()
+    try:
+        state = _get_state_snapshot()
+        await websocket.send_text(json.dumps({"type": "state_snapshot", "data": state}, ensure_ascii=False, default=str))
+        metrics = _get_metrics_history()
+        await websocket.send_text(json.dumps({"type": "metrics_history", "data": metrics}, ensure_ascii=False, default=str))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        progress_renderer.ws_clients.discard(websocket)
+
+
 @app.post("/report")
 async def report_metric(request: Request):
     data = await request.json()
@@ -922,6 +1031,16 @@ def get_summary():
 @app.get("/health")
 def health():
     return {"status": "ok", "log_count": len(logs)}
+
+
+@app.get("/api/state")
+def api_state():
+    return {"status": "success", "data": _get_state_snapshot()}
+
+
+@app.get("/api/metrics/history")
+def api_metrics_history():
+    return {"status": "success", "data": _get_metrics_history()}
 
 
 @app.post("/clear")
