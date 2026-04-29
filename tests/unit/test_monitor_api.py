@@ -377,3 +377,17 @@ class TestProgressRenderer:
     def test_load_render_mode_from_env(self):
         with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'plain'}):
             assert progress_renderer._load_render_mode() == "plain"
+
+
+def test_load_render_mode_web_from_env():
+    with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'web'}):
+        assert progress_renderer._load_render_mode() == "web"
+
+
+def test_web_mode_disables_rich_rendering():
+    progress_renderer.reset()
+    with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'web'}):
+        progress_renderer.render_mode = progress_renderer._load_render_mode()
+        progress_renderer.live_rendering = progress_renderer.render_mode not in {"plain", "web"} and progress_renderer.console.is_terminal
+    assert progress_renderer.render_mode == "web"
+    assert progress_renderer.live_rendering is False

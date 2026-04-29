@@ -12,8 +12,10 @@ from datetime import datetime
 from typing import Dict
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 try:
     from rich.cells import cell_len as _cell_len
 except Exception:
@@ -32,12 +34,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 logs = []
 lock = threading.Lock()
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
+
+WEB_STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
+
+def _is_web_mode():
+    return progress_renderer.render_mode == "web"
 
 summary = {
     "total_events": 0,
@@ -48,6 +56,17 @@ summary = {
         "bytes_recv": 0,
         "by_label": defaultdict(int),
     },
+}
+
+metrics_history = {
+    "rounds": [],
+    "train_loss": [],
+    "train_acc": [],
+    "val_loss": [],
+    "val_acc": [],
+    "test_loss": [],
+    "test_acc": [],
+    "per_client": defaultdict(lambda: {"rounds": [], "train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "test_loss": [], "test_acc": []}),
 }
 
 def _fmt_float(value, digits=4):
@@ -125,8 +144,10 @@ class ProgressRenderer:
         
         self.render_mode = self._load_render_mode()
         self.console = Console(highlight=False)
-        self.live_rendering = self.render_mode != "plain" and self.console.is_terminal
+        self.live_rendering = self.render_mode not in {"plain", "web"} and self.console.is_terminal
         self.live = None
+        self.ws_clients: set = set()
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
 
     def _write(self, line: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -139,13 +160,17 @@ class ProgressRenderer:
         env_mode = os.environ.get("MONITOR_RENDER_MODE")
         if env_mode:
             mode = env_mode.strip().lower()
-            return mode if mode in {"auto", "live", "plain"} else "auto"
+            return mode if mode in {"auto", "live", "plain", "web"} else "auto"
         try:
             config = _read_config()
         except Exception:
             return "auto"
         mode = str((config.get("monitoring", {}) or {}).get("render_mode", "auto")).strip().lower()
-        return mode if mode in {"auto", "live", "plain"} else "auto"
+        if mode not in {"auto", "live", "plain", "web"}:
+            mode = "auto"
+        if mode == "auto" and not self.console.is_terminal:
+            mode = "web"
+        return mode
 
     def _avg(self, values):
         if not values:
@@ -829,6 +854,28 @@ def _emit_control_event(item):
 controller = TrainingController(PROJECT_ROOT, PYTHON_BIN, event_hook=_emit_control_event)
 
 
+@app.get("/dashboard")
+async def dashboard():
+    if not _is_web_mode():
+        raise HTTPException(status_code=404, detail="Web mode is not enabled. Set monitoring.render_mode to 'web'.")
+    index_path = os.path.join(WEB_STATIC_DIR, "index.html")
+    if not os.path.exists(index_path):
+        raise HTTPException(status_code=404, detail="Dashboard not built. Run 'npm run build' in web/ directory.")
+    return FileResponse(index_path)
+
+
+@app.on_event("startup")
+async def on_startup():
+    if _is_web_mode():
+        try:
+            config = _read_config()
+            host = config.get("monitoring", {}).get("api_host", "127.0.0.1")
+            port = config.get("monitoring", {}).get("api_port", 9000)
+            print(f"\n  Dashboard: http://{host}:{port}/dashboard\n", flush=True)
+        except Exception:
+            pass
+
+
 @app.post("/report")
 async def report_metric(request: Request):
     data = await request.json()
@@ -940,6 +987,9 @@ async def training_stop():
         }
     )
     return {"status": "success", "training": result.get("status", {})}
+
+if os.path.isdir(WEB_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
 
 if __name__ == "__main__":
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
