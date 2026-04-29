@@ -5,6 +5,7 @@ import os
 import signal
 import torch
 import sys
+import argparse
 
 from utils.monitoring import MonitorReporter, compact_topology
 
@@ -81,13 +82,18 @@ def _graceful_stop(proc, wait_seconds=2.0):
         if proc.poll() is None:
             proc.kill()
 
-def start_experiment():
+def start_experiment(config_path=None):
     root = _project_root()
     py_bin = _python_bin()
     log_handles = []
-    with open(os.path.join(root, 'config.json'), 'r', encoding='utf-8') as f:
+
+    if config_path is None:
+        config_path = os.path.join(root, 'config.json')
+
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
+    mode = config.get("experiment", {}).get("mode", "centralized")
     data_prepare = _ensure_data(root, py_bin)
 
     env = os.environ.copy()
@@ -120,8 +126,73 @@ def start_experiment():
         network=config.get("network", {}),
         data_prepare=data_prepare,
         monitor_process=_proc_info(monitor_proc, "monitor"),
+        config_path=config_path,
     )
 
+    if mode == "ring":
+        _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
+    else:
+        _start_centralized_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
+
+
+def _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
+    """Launch decentralized ring topology: 3 ring nodes, no central server."""
+    nodes = config["topology"]["nodes"]
+    node_procs = []
+
+    for node_cfg in nodes:
+        node_id = str(node_cfg["id"])
+        node_log = _open_role_log(root, f"ring-node-{node_id}")
+        log_handles.append(node_log)
+        proc = subprocess.Popen(
+            [py_bin, "-m", "core.ring_node", node_id, "--config", config_path],
+            env=env,
+            cwd=root,
+            stdout=node_log,
+            stderr=subprocess.STDOUT,
+        )
+        node_procs.append(proc)
+        reporter.post(
+            "process_spawn",
+            process=_proc_info(proc, f"ring_node_{node_id}"),
+            node_id=node_id,
+        )
+
+    reporter.post(
+        "ring_mode_started",
+        node_count=len(nodes),
+        nodes=[{"id": n["id"], "addr": f"{n['host']}:{n['port']}"} for n in nodes],
+    )
+
+    try:
+        # Wait for first node (initiator) to finish — it controls the ring lifecycle
+        if node_procs:
+            node_procs[0].wait()
+    except KeyboardInterrupt:
+        print("Terminating ring experiment...")
+    finally:
+        reporter.post(
+            "manager_stopping",
+            mode="ring",
+            processes=[_proc_info(monitor_proc, "monitor")]
+            + [_proc_info(p, f"ring_node_{i+1}") for i, p in enumerate(node_procs)],
+        )
+        for p in node_procs:
+            if p is not None and p.poll() is None:
+                _graceful_stop(p, wait_seconds=2.0)
+        reporter.post(
+            "manager_stop",
+            mode="ring",
+            processes=[_proc_info(monitor_proc, "monitor")]
+            + [_proc_info(p, f"ring_node_{i+1}") for i, p in enumerate(node_procs)],
+        )
+        for h in log_handles:
+            h.close()
+        _graceful_stop(monitor_proc, wait_seconds=0.5)
+
+
+def _start_centralized_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
+    """Launch centralized or splitfed mode: 1 server + N clients."""
     server_log = _open_role_log(root, "server")
     log_handles.append(server_log)
     server_proc = subprocess.Popen(
@@ -177,4 +248,7 @@ def start_experiment():
         _graceful_stop(monitor_proc, wait_seconds=0.5)
 
 if __name__ == "__main__":
-    start_experiment()
+    parser = argparse.ArgumentParser(description="Federated Learning Experiment Manager")
+    parser.add_argument("--config", type=str, default=None, help="Path to config JSON file")
+    args = parser.parse_args()
+    start_experiment(config_path=args.config)

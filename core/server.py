@@ -84,6 +84,8 @@ class Server:
         self.round_updates = {}
         self.current_round = 0
         self.stop_event = threading.Event()
+        self.min_clients = int(self.config.get("network", {}).get("min_clients", 1))
+        self.dropped_clients = set()
         self.net_stats = {
             "bytes_sent": 0,
             "bytes_recv": 0,
@@ -432,6 +434,12 @@ class Server:
             time.sleep(1)
 
     def _wait_round_updates(self, round_id):
+        """Wait for client updates with timeout-based straggler dropping.
+
+        If timeout expires before all clients respond, the server drops
+        unresponsive clients for this round and aggregates only the
+        received updates, as long as at least min_clients responded.
+        """
         started = time.time()
         deadline = time.time() + self.timeout
         with self.update_cv:
@@ -441,6 +449,32 @@ class Server:
                     break
                 self.update_cv.wait(timeout=remain)
             got = dict(self.round_updates.get(round_id, {}))
+
+        # Identify dropped (straggler) clients
+        expected = set(self.active_clients.keys())
+        responded = set(got.keys())
+        dropped = expected - responded
+        round_dropped = set()
+        if dropped:
+            for cid in dropped:
+                round_dropped.add(cid)
+                self.dropped_clients.add(cid)
+                logging.warning(
+                    "STRAGGLER DROP: client %s timed out after %.1fs in round %d",
+                    cid,
+                    self.timeout,
+                    round_id,
+                )
+                self.monitor.post(
+                    "straggler_dropped",
+                    mode=self.mode,
+                    round=round_id,
+                    client_id=cid,
+                    timeout_seconds=self.timeout,
+                    reason="update_timeout",
+                )
+
+        can_proceed = len(got) >= self.min_clients
         self.monitor.post(
             "round_wait_result",
             mode=self.mode,
@@ -449,6 +483,8 @@ class Server:
             received_count=len(got),
             expected_count=self.num_clients,
             clients=sorted(got.keys()),
+            dropped_clients=sorted(round_dropped),
+            can_proceed=can_proceed,
             timeout_seconds=self.timeout,
         )
         return got
@@ -489,7 +525,30 @@ class Server:
         updates = self._wait_round_updates(round_id)
         update_list = list(updates.values())
         if len(update_list) < self.num_clients:
-            logging.warning("Round %d timeout: received %d/%d updates", round_id, len(update_list), self.num_clients)
+            dropped = self.num_clients - len(update_list)
+            logging.warning(
+                "Round %d straggler handling: received %d/%d updates, dropped %d client(s)",
+                round_id,
+                len(update_list),
+                self.num_clients,
+                dropped,
+            )
+            if len(update_list) < self.min_clients:
+                logging.error(
+                    "Round %d aborted: only %d update(s) received, need at least %d",
+                    round_id,
+                    len(update_list),
+                    self.min_clients,
+                )
+                self.monitor.post(
+                    "round_aborted",
+                    mode="centralized",
+                    round=round_id,
+                    received_updates=len(update_list),
+                    min_clients=self.min_clients,
+                    dropped_clients=dropped,
+                )
+                return 0.0
 
         agg = self._aggregate_weighted(update_list)
         if agg is not None:
@@ -551,7 +610,30 @@ class Server:
         updates = self._wait_round_updates(round_id)
         update_list = list(updates.values())
         if len(update_list) < self.num_clients:
-            logging.warning("Round %d timeout: received %d/%d split updates", round_id, len(update_list), self.num_clients)
+            dropped = self.num_clients - len(update_list)
+            logging.warning(
+                "Round %d splitfed straggler handling: received %d/%d updates, dropped %d client(s)",
+                round_id,
+                len(update_list),
+                self.num_clients,
+                dropped,
+            )
+            if len(update_list) < self.min_clients:
+                logging.error(
+                    "Round %d splitfed aborted: only %d update(s) received, need at least %d",
+                    round_id,
+                    len(update_list),
+                    self.min_clients,
+                )
+                self.monitor.post(
+                    "round_aborted",
+                    mode="splitfed",
+                    round=round_id,
+                    received_updates=len(update_list),
+                    min_clients=self.min_clients,
+                    dropped_clients=dropped,
+                )
+                return 0.0
 
         agg = self._aggregate_weighted(update_list)
         if agg is not None:
