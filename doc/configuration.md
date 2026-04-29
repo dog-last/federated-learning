@@ -44,7 +44,11 @@
 ### monitoring
 
 - `api_host` 与 `api_port`：监控 API 地址
-- `render_mode`：监控显示模式，支持 `auto`、`live`、`plain`
+- `render_mode`：监控显示模式，支持 `auto`、`live`、`plain`、`web`
+  - `auto`：自动检测终端能力，终端环境下使用 live 渲染，非终端环境使用 web 模式
+  - `live`：强制使用 Rich Live 终端渲染
+  - `plain`：普通文本输出，便于日志收集
+  - `web`：网页仪表盘模式，通过浏览器访问监控界面，支持实时数据推送、图表、节点拓扑可视化
 
 ## 3. 配置示例
 
@@ -105,6 +109,7 @@
 | Centralized 服务端 | 8000 | 固定端口 |
 | Centralized 客户端 | 8001+ | 根据客户端数量递增 |
 | Ring 节点 | 8101+ | 根据节点数量递增 |
+| Web 仪表盘 | 9000 | 与监控服务共用端口，路径为 /dashboard |
 
 ## 6. Straggler 配置
 
