@@ -145,7 +145,7 @@ def _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handl
         node_log = _open_role_log(root, f"ring-node-{node_id}")
         log_handles.append(node_log)
         proc = subprocess.Popen(
-            [py_bin, "-m", "core.ring_node", node_id, "--config", config_path],
+            [py_bin, "-m", "core.ring_node", node_id, "--config", config_path, "--data-path", root],
             env=env,
             cwd=root,
             stdout=node_log,
@@ -196,7 +196,7 @@ def _start_centralized_mode(root, py_bin, env, config, config_path, reporter, lo
     server_log = _open_role_log(root, "server")
     log_handles.append(server_log)
     server_proc = subprocess.Popen(
-        [py_bin, "-m", "core.server"],
+        [py_bin, "-m", "core.server", "--config", config_path, "--data-path", root],
         env=env,
         cwd=root,
         stdout=server_log,
@@ -212,7 +212,7 @@ def _start_centralized_mode(root, py_bin, env, config, config_path, reporter, lo
         client_log = _open_role_log(root, f"client-{cid}")
         log_handles.append(client_log)
         proc = subprocess.Popen(
-            [py_bin, "-m", "core.client", cid],
+            [py_bin, "-m", "core.client", cid, "--config", config_path, "--data-path", root],
             env=env,
             cwd=root,
             stdout=client_log,
@@ -251,4 +251,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Federated Learning Experiment Manager")
     parser.add_argument("--config", type=str, default=None, help="Path to config JSON file")
     args = parser.parse_args()
+    # If config path is not provided, it will default to 'config.json' in the same directory as this script
+    if args.config is None:
+        args.config = os.path.join(_project_root(), 'config.json')
+    print(f"Using config file: {args.config}")
     start_experiment(config_path=args.config)

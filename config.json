@@ -1,6 +1,6 @@
 {
     "experiment": {
-        "mode": "centralized",
+        "mode": "ring",
         "global_epochs": 10,
         "local_epochs": 1,
         "seed": 42,
@@ -28,6 +28,11 @@
             {"id": "client_1", "host": "127.0.0.1", "port": 8001},
             {"id": "client_2", "host": "127.0.0.1", "port": 8002},
             {"id": "client_3", "host": "127.0.0.1", "port": 8003}
+        ],
+        "nodes": [
+            {"id": 1, "host": "127.0.0.1", "port": 8101},
+            {"id": 2, "host": "127.0.0.1", "port": 8102},
+            {"id": 3, "host": "127.0.0.1", "port": 8103}
         ]
     },
     "network": {

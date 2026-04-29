@@ -39,7 +39,9 @@ class Client:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        self.project_root = project_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Rule: data directory must reside under the project root containing `manager.py`.
+        # Allow tests or callers to override by passing `project_root` explicitly.
+        self.project_root = project_root
         self.client_id = client_id
         preferred_device = self.config.get("experiment", {}).get("device", "auto")
         self.device = self._select_device(preferred_device)
@@ -553,10 +555,13 @@ class Client:
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    if len(sys.argv) < 2:
-        print("Usage: python -m core.client <client_id>")
-    else:
-        client = Client("config.json", sys.argv[1])
-        client.run()
+    parser = argparse.ArgumentParser(description="Client for federated learning")
+    parser.add_argument("client_id", type=str, help="Client identifier (e.g. client_1)")
+    parser.add_argument("--config", type=str, default="config.json", help="Path to config file")
+    parser.add_argument("--data-path", type=str, default=None, help="Project root path containing data (overrides default)")
+    args = parser.parse_args()
+
+    client = Client(args.config, args.client_id, project_root=args.data_path)
+    client.run()

@@ -64,9 +64,9 @@ class RingNode:
             self.config = json.load(f)
 
         self.node_id = node_id
-        self.project_root = project_root or os.path.dirname(
-            os.path.dirname(os.path.abspath(config_path))
-        )
+        # Rule: data directory must reside under the project root containing `manager.py`.
+        # Allow tests or callers to override by passing `project_root` explicitly.
+        self.project_root = project_root
         preferred_device = self.config.get("experiment", {}).get("device", "auto")
         self.device = self._select_device(preferred_device)
 
@@ -609,7 +609,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ring node for decentralized federated learning")
     parser.add_argument("node_id", type=int, help="Node ID (1-based)")
     parser.add_argument("--config", type=str, default="config.json", help="Path to config file")
+    parser.add_argument("--data-path", type=str, default=None, help="Project root path containing data (overrides default)")
     args = parser.parse_args()
 
-    node = RingNode(args.config, args.node_id)
+    node = RingNode(args.config, args.node_id, project_root=args.data_path)
     node.run()

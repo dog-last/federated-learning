@@ -161,12 +161,23 @@ class TrainingController:
 
         try:
             resolved = self._resolve_config(config)
+            # Determine a config path to pass to subprocesses. If the caller
+            # provided a path string, reuse it; if they provided a dict, write
+            # it to a temp config file under the project root so child processes
+            # can receive a path via --config.
+            if isinstance(config, str):
+                config_path = config
+            else:
+                config_path = os.path.join(self.project_root, ".generated_config.json")
+                with open(config_path, "w", encoding="utf-8") as cf:
+                    json.dump(resolved, cf)
+
             self._ensure_data(resolved)
             env = os.environ.copy()
             env["PYTHONPATH"] = self.project_root
 
             server_proc = subprocess.Popen(
-                [self.python_bin, "-m", "core.server"],
+                [self.python_bin, "-m", "core.server", "--config", config_path, "--data-path", self.project_root],
                 cwd=self.project_root,
                 env=env,
                 stdout=self._open_role_log("server"),
@@ -178,7 +189,7 @@ class TrainingController:
             for client in resolved["topology"]["clients"]:
                 cid = client["id"]
                 p = subprocess.Popen(
-                    [self.python_bin, "-m", "core.client", cid],
+                    [self.python_bin, "-m", "core.client", cid, "--config", config_path, "--data-path", self.project_root],
                     cwd=self.project_root,
                     env=env,
                     stdout=self._open_role_log(f"client-{cid}"),
