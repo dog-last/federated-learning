@@ -4,6 +4,7 @@ import time
 import os
 import signal
 import torch
+import sys
 
 from utils.monitoring import MonitorReporter, compact_topology
 
@@ -25,7 +26,7 @@ def _open_role_log(root, role):
 
 
 def _python_bin():
-    return os.environ.get("PYTHON_BIN", "/opt/homebrew/Caskroom/miniconda/base/envs/sf_env/bin/python")
+    return os.environ.get("PYTHON_BIN", sys.executable)
 
 
 def _is_mnist_split_compatible(required_files):

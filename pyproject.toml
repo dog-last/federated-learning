@@ -1,0 +1,31 @@
+[project]
+name = "federated-learning"
+version = "0.1.0"
+description = "Federated learning framework with centralized and decentralized training"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.136.1",
+    "numpy>=2.4.4",
+    "rich>=15.0.0",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "uvicorn>=0.46.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-n 8 --cov=core --cov=utils --cov=scripts --cov-report=term-missing:skip-covered"
+markers = [
+    "integration: marks tests as integration tests (need --run-integration to run)",
+]

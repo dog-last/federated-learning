@@ -51,6 +51,19 @@ class TCPCommunicator:
         message, _ = self.recv_data_with_meta(sock)
         return message
 
+    def _serialize(self, message_dict):
+        """Serialize a dictionary to bytes."""
+        data = pickle.dumps(message_dict)
+        if self.use_compression:
+            data = gzip.compress(data)
+        return data
+
+    def _deserialize(self, data):
+        """Deserialize bytes to a dictionary."""
+        if self.use_compression:
+            data = gzip.decompress(data)
+        return pickle.loads(data)
+
     def recv_data_with_meta(self, sock):
         """
         Receives data from bounded streams, waits strictly for exact bytes to handle huge models.
