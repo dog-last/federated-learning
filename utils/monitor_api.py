@@ -337,12 +337,21 @@ class ProgressRenderer:
                 exp = item.get("experiment", {}) or {}
                 self.epoch_total = max(int(exp.get("global_epochs", self.epoch_total) or 1), 1)
                 self.mode = exp.get("mode", self.mode)
-                clients = (item.get("topology", {}) or {}).get("clients", [])
-                self.expected_clients = int((item.get("topology", {}) or {}).get("client_count", len(clients)) or len(clients))
-                for c in clients:
-                    cid = c.get("id") if isinstance(c, dict) else None
-                    if cid:
-                        self._ensure_client_state(cid)
+                topo = item.get("topology", {}) or {}
+                if self.mode == "ring":
+                    nodes = topo.get("nodes", [])
+                    self.expected_clients = int(topo.get("node_count", len(nodes)) or len(nodes))
+                    for n in nodes:
+                        nid = n.get("id") if isinstance(n, dict) else None
+                        if nid:
+                            self._ensure_client_state(f"client_{nid}")
+                else:
+                    clients = topo.get("clients", [])
+                    self.expected_clients = int(topo.get("client_count", len(clients)) or len(clients))
+                    for c in clients:
+                        cid = c.get("id") if isinstance(c, dict) else None
+                        if cid:
+                            self._ensure_client_state(cid)
                 self._render_status(force=True)
                 return
 
@@ -491,6 +500,132 @@ class ProgressRenderer:
                     self.client_states[client_id]["status"] = "disconnected"
                     self.active_clients = [c for c in self.active_clients if c != client_id]
                 self._render_status(force=True)
+                return
+
+            # --- Ring mode events ---
+
+            if event_type == "ring_node_startup":
+                nid = item.get("node_id")
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "online"
+                self._render_status()
+                return
+
+            if event_type == "ring_node_ready":
+                nid = item.get("node_id")
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "ready"
+                    if item.get("is_initiator"):
+                        self._write(f"[RING] node {nid} ready (initiator), total_nodes={item.get('total_nodes', '-')}")
+                    else:
+                        self._write(f"[RING] node {nid} ready, total_nodes={item.get('total_nodes', '-')}")
+                self._render_status()
+                return
+
+            if event_type == "ring_all_joined":
+                self._write(f"[RING] all nodes joined {item.get('joined_count', '-')}/{item.get('expected_count', '-')}")
+                self.phase = "ring synchronized"
+                self._render_status(force=True)
+                return
+
+            if event_type == "ring_round_start":
+                round_id = int(item.get("round", 0) or 0)
+                nid = item.get("node_id")
+                role = item.get("role", "")
+                self.current_round = round_id
+                self.epoch_progress = round_id - 1
+                if role == "initiator":
+                    self.current_round_started_at = time.time()
+                    self.client_pct.clear()
+                    self.current_round_pct = 0.0
+                self.phase = f"ring round {round_id}" if role == "initiator" else f"ring round {round_id} waiting"
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "training" if role == "initiator" else "waiting"
+                    self.client_states[cid]["progress"] = 0.0
+                if role == "initiator":
+                    self._write(f"[RING] round {round_id}/{self.epoch_total} start (initiator=node {nid})")
+                self._render_status(force=True)
+                return
+
+            if event_type == "ring_local_train_done":
+                nid = item.get("node_id")
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "trained"
+                    self.client_states[cid]["progress"] = 1.0
+                    self.client_states[cid]["train_loss"] = item.get("train_loss")
+                    self.client_states[cid]["train_acc"] = item.get("train_acc")
+                    self.client_states[cid]["test_acc"] = item.get("test_acc")
+                self._write(
+                    f"[RING] node {nid} local train done round={item.get('round', '-')} "
+                    f"loss={_fmt_float(item.get('train_loss'))} acc={_fmt_float(item.get('train_acc'))} "
+                    f"val_acc={_fmt_float(item.get('val_acc'))}"
+                )
+                self.phase = f"ring node {nid} trained"
+                self._render_status(force=True)
+                return
+
+            if event_type == "ring_send":
+                nid = item.get("node_id")
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "sending"
+                self._render_status()
+                return
+
+            if event_type == "ring_recv":
+                nid = item.get("node_id")
+                if nid is not None:
+                    cid = f"client_{nid}"
+                    self._ensure_client_state(cid)
+                    self.client_states[cid]["status"] = "receiving"
+                self._render_status()
+                return
+
+            if event_type == "ring_global_eval":
+                round_id = int(item.get("round", 0) or 0)
+                self.last_round_loss = item.get("test_loss")
+                self.last_round_acc = item.get("test_acc")
+                self.phase = "ring global evaluation"
+                self._write(
+                    f"[RING] round {round_id} global eval loss={_fmt_float(item.get('test_loss'))} "
+                    f"acc={_fmt_float(item.get('test_acc'))}"
+                )
+                self._render_status(force=True)
+                return
+
+            if event_type == "ring_round_end":
+                round_id = int(item.get("round", 0) or 0)
+                self.epoch_progress = min(max(round_id, 0), max(self.epoch_total, 1))
+                self.phase = "ring round complete"
+                self.current_round_pct = 1.0
+                if self.current_round_started_at is not None:
+                    self.round_durations.append(time.time() - self.current_round_started_at)
+                for cid in self.known_clients:
+                    self._ensure_client_state(cid)
+                    if self.client_states[cid].get("status") in {"training", "trained", "sending", "receiving", "waiting", "ready"}:
+                        self.client_states[cid]["status"] = "done"
+                        self.client_states[cid]["progress"] = 1.0
+                self._write(
+                    f"[RING] round {round_id}/{self.epoch_total} done "
+                    f"loss={_fmt_float(self.last_round_loss)} acc={_fmt_float(self.last_round_acc)} "
+                    f"avg_round={_fmt_seconds(self._avg(self.round_durations))} "
+                    f"sent={_fmt_bytes(self.total_bytes_sent)} recv={_fmt_bytes(self.total_bytes_recv)}"
+                )
+                self._render_status(force=True)
+                return
+
+            if event_type in {"ring_pass_failed", "ring_recv_timeout"}:
+                self._write(f"[RING] {event_type} node={item.get('node_id', '-')} round={item.get('round', '-')}")
+                self._render_status()
                 return
 
             if event_type in {"training_started", "training_stopped", "training_start_requested", "training_stop_requested"}:

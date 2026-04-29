@@ -76,7 +76,7 @@ def _make_server(mode="centralized"):
         config = _make_config(mode)
         config_path = _write_config_and_data(config, tmp_dir)
         with patch('core.server.socket.socket', return_value=_mock_socket()):
-            server = Server(config_path)
+            server = Server(config_path, project_root=tmp_dir)
         yield server
 
 
@@ -91,11 +91,13 @@ def server_splitfed():
 
 
 class TestServerSelectDevice:
-    def test_auto_returns_cpu(self):
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_auto_returns_cpu(self, _mock_cuda):
         from core.server import Server
         assert Server._select_device("auto") == torch.device("cpu")
 
-    def test_none_returns_cpu(self):
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_none_returns_cpu(self, _mock_cuda):
         from core.server import Server
         assert Server._select_device(None) == torch.device("cpu")
 
@@ -121,7 +123,7 @@ class TestServerInit:
                 json.dump(config, f)
             with patch('core.server.socket.socket', return_value=_mock_socket()):
                 with pytest.raises(FileNotFoundError, match="Missing"):
-                    Server(config_path)
+                    Server(config_path, project_root=tmp_dir)
 
 
 class TestServerNormalize:

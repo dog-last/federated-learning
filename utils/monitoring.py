@@ -15,6 +15,9 @@ def payload_label(message_type: str) -> str:
         "split_update": "split_client_weights_update",
         "split_batch": "activations_and_labels",
         "split_grad": "activation_gradients",
+        "ring_pass": "ring_model_weights",
+        "ring_join": "ring_control_join",
+        "ring_shutdown": "ring_control_shutdown",
     }
     return labels.get(message_type, "unknown")
 
@@ -46,9 +49,22 @@ class MonitorReporter:
 
 def compact_topology(config: Dict[str, Any]) -> Dict[str, Any]:
     topo = config.get("topology", {})
-    clients = topo.get("clients", [])
-    return {
-        "server": topo.get("server", {}),
-        "client_count": len(clients),
-        "clients": [{"id": c.get("id"), "host": c.get("host"), "port": c.get("port")} for c in clients],
-    }
+    mode = config.get("experiment", {}).get("mode", "centralized")
+    result: Dict[str, Any] = {"mode": mode}
+    if mode == "ring":
+        nodes = topo.get("nodes", [])
+        result["topology"] = "ring"
+        result["node_count"] = len(nodes)
+        result["nodes"] = [
+            {"id": n.get("id"), "host": n.get("host"), "port": n.get("port")}
+            for n in nodes
+        ]
+    else:
+        clients = topo.get("clients", [])
+        result["server"] = topo.get("server", {})
+        result["client_count"] = len(clients)
+        result["clients"] = [
+            {"id": c.get("id"), "host": c.get("host"), "port": c.get("port")}
+            for c in clients
+        ]
+    return result

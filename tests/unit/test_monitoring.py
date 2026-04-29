@@ -85,11 +85,15 @@ class TestCompactTopology:
     def test_empty_topology(self):
         config = {}
         result = compact_topology(config)
-        assert result == {"server": {}, "client_count": 0, "clients": []}
+        assert result["mode"] == "centralized"
+        assert result["server"] == {}
+        assert result["client_count"] == 0
+        assert result["clients"] == []
 
     def test_topology_with_server_only(self):
         config = {"topology": {"server": {"host": "127.0.0.1", "port": 8080}}}
         result = compact_topology(config)
+        assert result["mode"] == "centralized"
         assert result["server"] == {"host": "127.0.0.1", "port": 8080}
         assert result["client_count"] == 0
         assert result["clients"] == []
@@ -105,6 +109,7 @@ class TestCompactTopology:
             }
         }
         result = compact_topology(config)
+        assert result["mode"] == "centralized"
         assert result["server"] == {"host": "127.0.0.1", "port": 8080}
         assert result["client_count"] == 2
         assert len(result["clients"]) == 2
@@ -121,6 +126,24 @@ class TestCompactTopology:
             }
         }
         result = compact_topology(config)
+        assert result["mode"] == "centralized"
         assert result["client_count"] == 2
         assert result["clients"][0] == {"id": "client_1", "host": None, "port": None}
         assert result["clients"][1] == {"id": None, "host": "127.0.0.1", "port": None}
+
+    def test_ring_topology(self):
+        config = {
+            "experiment": {"mode": "ring"},
+            "topology": {
+                "nodes": [
+                    {"id": 1, "host": "127.0.0.1", "port": 9001},
+                    {"id": 2, "host": "127.0.0.1", "port": 9002},
+                    {"id": 3, "host": "127.0.0.1", "port": 9003},
+                ]
+            },
+        }
+        result = compact_topology(config)
+        assert result["mode"] == "ring"
+        assert result["topology"] == "ring"
+        assert result["node_count"] == 3
+        assert len(result["nodes"]) == 3

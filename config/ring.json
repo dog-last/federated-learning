@@ -1,6 +1,6 @@
 {
     "experiment": {
-        "mode": "centralized",
+        "mode": "ring",
         "global_epochs": 10,
         "local_epochs": 1,
         "seed": 42,
@@ -14,20 +14,15 @@
         },
         "optimization": {
             "client_lr": 0.01,
-            "server_lr": 0.01,
             "momentum": 0.9,
             "weight_decay": 0.0005
         }
     },
     "topology": {
-        "server": {
-            "host": "127.0.0.1",
-            "port": 8000
-        },
-        "clients": [
-            {"id": "client_1", "host": "127.0.0.1", "port": 8001},
-            {"id": "client_2", "host": "127.0.0.1", "port": 8002},
-            {"id": "client_3", "host": "127.0.0.1", "port": 8003}
+        "nodes": [
+            {"id": 1, "host": "127.0.0.1", "port": 9001},
+            {"id": 2, "host": "127.0.0.1", "port": 9002},
+            {"id": 3, "host": "127.0.0.1", "port": 9003}
         ]
     },
     "network": {
@@ -36,8 +31,6 @@
             "client_2": {"delay": 5.0, "drop_rate": 0.0},
             "client_3": {"delay": 0.0, "drop_rate": 0.0}
         },
-        "server_timeout": 15.0,
-        "min_clients": 1,
         "compression": false
     },
     "monitoring": {

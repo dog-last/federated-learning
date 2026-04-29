@@ -98,15 +98,18 @@ def client_splitfed():
 
 
 class TestSelectDevice:
-    def test_auto_returns_cpu(self):
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_auto_returns_cpu(self, _mock_cuda):
         from core.client import Client
         assert Client._select_device("auto") == torch.device("cpu")
 
-    def test_empty_returns_cpu(self):
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_empty_returns_cpu(self, _mock_cuda):
         from core.client import Client
         assert Client._select_device("") == torch.device("cpu")
 
-    def test_none_returns_cpu(self):
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_none_returns_cpu(self, _mock_cuda):
         from core.client import Client
         assert Client._select_device(None) == torch.device("cpu")
 
@@ -185,7 +188,7 @@ class TestClientHelpers:
             config_path = _write_config(config, tmp_dir)
             with patch('core.client.socket.socket'):
                 with pytest.raises(FileNotFoundError, match="Missing"):
-                    Client(config_path, "client_1")
+                    Client(config_path, "client_1", project_root=tmp_dir)
 
 
 class TestClientEval:
@@ -209,4 +212,4 @@ class TestClientMissingData:
             config_path = _write_config(config, tmp_dir)
             with patch('core.client.socket.socket'):
                 with pytest.raises(FileNotFoundError):
-                    Client(config_path, "client_1")
+                    Client(config_path, "client_1", project_root=tmp_dir)
