@@ -18,3 +18,5 @@ wheels/
 data/
 logs/
 outputs/
+
+!src/data/
