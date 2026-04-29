@@ -2,12 +2,13 @@
 
 ## 1. 项目目标
 
-本项目实现一个用于 MNIST 分类的联邦学习实验框架，支持两种训练模式：
+本项目实现一个用于 MNIST 分类的联邦学习实验框架，支持三种训练模式：
 
 - **Centralized（集中式）**：传统联邦学习，客户端本地训练后上传模型参数，服务端聚合
 - **SplitFed（分割联邦）**：将模型分割在客户端和服务端，中间传输激活值和梯度
+- **Ring（环形拓扑）**：去中心化联邦学习，节点间直接通信形成环形拓扑
 
-项目同时保留集中式训练路径，便于比较不同训练方式的通信成本、收敛行为与监控表现。
+项目同时保留多种训练路径，便于比较不同训练方式的通信成本、收敛行为与监控表现。
 
 ## 2. 项目架构
 
@@ -21,6 +22,7 @@ federated-learning/
 ├── core/                   # 核心训练逻辑
 │   ├── server.py           # 联邦学习服务端
 │   ├── client.py           # 联邦学习客户端
+│   ├── ring_node.py        # 环形拓扑节点
 │   └── communicator.py     # TCP 通信协议
 │
 ├── utils/                  # 工具模块
@@ -30,6 +32,7 @@ federated-learning/
 │
 ├── scripts/                # 数据准备脚本
 │   ├── prepare_mnist.py    # MNIST 数据下载与拆分
+
 │   └── split.py            # 数据拆分工具
 │
 ├── tests/                  # 测试套件
@@ -43,7 +46,7 @@ federated-learning/
 
 ## 3. 运行主链路
 
-一次完整实验的主链路如下：
+### Centralized/SplitFed 模式
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -73,16 +76,56 @@ federated-learning/
                     └─────────────────┘
 ```
 
+### Ring 模式
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        manager.py                               │
+│  1. 读取 config.json                                            │
+│  2. 检查数据文件，必要时调用 prepare_mnist.py                    │
+│  3. 启动 monitor_api.py（监控服务）                              │
+│  4. 启动多个 core.ring_node（节点进程）                           │
+│┌─────────────────────────────────────────────────────────────────┐
+         │ 5. 节点 1 作为发起者，控制整个环的生命周期          │
+         │ 6. 节点间直接通信，形成环形拓扑                  │
+         │ 7. 等待训练完成，回收进程                                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────────────────────────────┐
+        │                    │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  monitor_api  │    │  ring_node_1  │    │  ring_node_2  │
+│  (port 9000)  │    │  (port 8101)  │    │  (port 8102)  │
+└───────────────┘    └───────────────┘    └───────────────┘
+        │                     ▲                     ▲
+        │                     │                     │
+        └─────────────────────┴─────────────────────┘
+                              │
+                              ▼
+                        ┌───────────────┐
+                        │  ring_node_3  │
+                        │  (port 8103)  │
+                        └───────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │  communicator   │
+                    │  (TCP 协议)     │
+                    └─────────────────┘
+```
+
 ### 详细流程
 
 1. **配置加载**：`manager.py` 读取 `config.json`，获取训练参数、网络拓扑、监控配置
 2. **数据准备**：检查 `data/splits/` 下的数据文件，缺失时自动运行 `scripts/prepare_mnist.py`
 3. **监控启动**：启动 `utils/monitor_api.py` 提供 HTTP API（默认 http://127.0.0.1:9000）
-4. **服务端启动**：启动 `core.server` 进程，监听配置指定的端口
-5. **客户端启动**：为每个配置的客户端启动 `core.client` 进程
-6. **训练执行**：服务端与客户端通过 `core.communicator.TCPCommunicator` 进行 TCP 通信
-7. **事件上报**：`utils.monitoring.MonitorReporter` 将训练事件上报到监控服务
-8. **进程回收**：训练完成后，`manager.py` 优雅地停止所有进程
+4. **根据模式启动**：
+   - **Centralized/SplitFed**：启动 `core.server` 进程，然后启动多个 `core.client` 进程
+   - **Ring**：直接启动多个 `core.ring_node` 进程，节点 1 作为发起者
+5. **训练执行**：通过 `core.communicator.TCPCommunicator` 进行 TCP 通信
+6. **事件上报**：`utils.monitoring.MonitorReporter` 将训练事件上报到监控服务
+7. **进程回收**：训练完成后，`manager.py` 优雅地停止所有进程
 
 ## 4. 核心模块职责
 
@@ -104,10 +147,19 @@ federated-learning/
 - 或运行 SplitFed 的前向与反向流程
 - 上报训练指标和网络事件
 
+### core/ring_node.py
+
+环形节点负责：
+- 作为 P2P 节点参与去中心化联邦学习
+- 监听前驱节点的连接
+- 连接到后继节点传递模型
+- 本地训练后传递更新模型
+- 节点 1 作为发起者，评估全局模型并控制训练生命周期
+
 ### core/communicator.py
 
 TCP 通信协议实现：
-- 固定前缀协议：8字节长度 + 4字节魔数（`SF26`）+ pickle 序列化负载
+- 固定前缀协议：8字节长度 + 4字节魔数（`SF26`）+ pickle 序
 - 支持 gzip 压缩（可配置）
 - 处理连接管理、超时、重试
 
@@ -115,7 +167,7 @@ TCP 通信协议实现：
 
 监控服务：
 - FastAPI 提供 HTTP API
-- 实时终端渲染（Rich）
+- 实时终端渲染
 - 训练事件收集与查询
 - 训练控制（启动/停止）
 
@@ -154,6 +206,20 @@ Client 3:  Local Data → Forward (Client Side) → Activations ──┘    Gra
                                                               ◄── Backward (Client Side)
 ```
 
+### Ring 模式
+
+```
+Node 1: Local Data → Local Train → Model ─────────────────────────────────────┐
+                                     ▲                                   │
+                                     │                                   ▼
+                             ◄────────────────────────────────── Node 3: Model
+                             │                          ↓
+                             │                    Local Train
+                      Node 2: Model ←───────────────┘
+                             ↓
+                    Local Train
+```
+
 ## 6. 代码分层
 
 | 层级 | 文件/目录 | 职责 |
@@ -162,10 +228,10 @@ Client 3:  Local Data → Forward (Client Side) → Activations ──┘    Gra
 | 控制层 | `utils/training_controller.py` | 训练状态管理，API 控制 |
 | 服务层 | `utils/monitor_api.py` | 监控服务，事件收集 |
 | 协议层 | `core/communicator.py` | TCP 通信协议 |
-| 节点层 | `core/server.py`, `core/client.py` | 训练节点实现 |
+| 节点层 | `core/server.py`, `core/client.py`, `core/ring_node.py` | 训练节点实现 |
 | 模型层 | `model.py` | 模型定义 |
 | 数据层 | `scripts/prepare_mnist.py` | 数据准备与拆分 |
-| 工具层 | `utils/monitoring.py` | 监控上报封装 |
+| 工具层 | `utils/monitoring.py`` | 监控上报封装 |
 
 ## 7. 推荐阅读顺序
 
@@ -191,6 +257,8 @@ Client 3:  Local Data → Forward (Client Side) → Activations ──┘    Gra
    │
    ├──► core/client.py  # 了解客户端逻辑
    │
+   ├──► core/ring_node.py  # 了解环形节点逻辑
+   │
    ├──► core/communicator.py  # 了解通信协议
    │
    └──► utils/monitor_api.py  # 了解监控服务
@@ -201,7 +269,7 @@ Client 3:  Local Data → Forward (Client Side) → Activations ──┘    Gra
 ### 8.1 进程模型
 
 - `manager.py` 作为主进程，创建子进程运行服务端和客户端
-- 每个客户端独立进程，模拟真实联邦学习环境
+- 每个客户端/节点独立进程，模拟真实联邦学习环境
 - 进程间通过 TCP 通信，而非共享内存
 
 ### 8.2 通信协议
@@ -222,14 +290,22 @@ Client 3:  Local Data → Forward (Client Side) → Activations ──┘    Gra
 - 每个客户端有独立的训练/验证/测试集
 - 服务端保留全局测试集用于评估
 
+### 8.5 环形拓扑
+
+- 去中心化架构，无单点故障
+- 节点间直接 P2P 通信
+- 节点 1 作为发起者，控制训练生命周期
+- 支持全局模型评估和目标精度检测
+
 ## 9. 扩展建议
 
 ### 新增训练模式
 
 1. 在 `model.py` 添加新模型
 2. 在 `core/server.py` 和 `core/client.py` 实现对应逻辑
-3. 更新 `config.json` 的 `mode` 选项
-4. 添加对应测试
+3. 或在 `core/` 下创建新的节点类型
+4. 更新 `config.json` 的 `mode` 选项
+5. 添加对应测试
 
 ### 新增数据集
 
@@ -254,6 +330,9 @@ tail -f logs/server-*.log
 
 # 查看客户端日志
 tail -f logs/client-*-*.log
+
+# 查看环节点日志
+tail -f logs/ring-node-*-*.log
 ```
 
 ### 手动运行组件
@@ -270,6 +349,9 @@ uv run python -m core.server
 
 # 单独运行客户端
 uv run python -m core.client client_1
+
+# 单独运行环节点
+uv run python -m core.ring_node 1
 ```
 
 ### 使用调试模式
