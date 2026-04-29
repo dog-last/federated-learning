@@ -1,10 +1,11 @@
+import json
 import os
 import signal
 import subprocess
 import threading
 import time
 import torch
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 
 class TrainingController:
@@ -47,6 +48,7 @@ class TrainingController:
 
     def _emit(self, event: Dict[str, Any]) -> None:
         if self.event_hook:
+            event["ts"] = time.time()
             self.event_hook(event)
 
     def _proc_info(self, proc, role: str) -> Dict[str, Any]:
@@ -124,16 +126,42 @@ class TrainingController:
                 }
             )
 
-    def start(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_config(self, config: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+        if isinstance(config, str):
+            if not os.path.isfile(config):
+                raise FileNotFoundError(f"Config file not found: {config}")
+            with open(config, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return config
+
+    def start(self, config: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         with self._lock:
             if self._state in {"running", "starting"}:
-                return {"ok": False, "reason": "already_running", "status": self.status()}
+                state = self._state
+                started_at = self._started_at
+                stopped_at = self._stopped_at
+                last_error = self._last_error
+                return {
+                    "ok": False,
+                    "reason": "already_running",
+                    "error": "already_running",
+                    "status": {
+                        "state": state,
+                        "started_at": started_at,
+                        "stopped_at": stopped_at,
+                        "uptime_seconds": 0,
+                        "server": self._proc_info(None, "server"),
+                        "clients": [],
+                        "last_error": last_error,
+                    },
+                }
             self._state = "starting"
             self._last_error = None
             self._manual_stop_requested = False
 
         try:
-            self._ensure_data(config)
+            resolved = self._resolve_config(config)
+            self._ensure_data(resolved)
             env = os.environ.copy()
             env["PYTHONPATH"] = self.project_root
 
@@ -147,7 +175,7 @@ class TrainingController:
             time.sleep(1)
 
             client_procs = []
-            for client in config["topology"]["clients"]:
+            for client in resolved["topology"]["clients"]:
                 cid = client["id"]
                 p = subprocess.Popen(
                     [self.python_bin, "-m", "core.client", cid],
@@ -176,7 +204,7 @@ class TrainingController:
                 }
             )
             return {"ok": True, "status": self.status()}
-        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+        except (FileNotFoundError, OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
             self._close_role_logs()
             with self._lock:
                 self._state = "stopped"
@@ -186,7 +214,17 @@ class TrainingController:
     def stop(self) -> Dict[str, Any]:
         with self._lock:
             if self._state == "stopped":
-                return {"ok": True, "status": self.status()}
+                # Build status dict directly to avoid re-acquiring lock
+                status = {
+                    "state": self._state,
+                    "started_at": self._started_at,
+                    "stopped_at": self._stopped_at,
+                    "uptime_seconds": 0,
+                    "server": self._proc_info(self._server_proc, "server"),
+                    "clients": [self._proc_info(p, "client") for p in self._client_procs],
+                    "last_error": self._last_error,
+                }
+                return {"ok": True, "status": status}
             self._state = "stopping"
             self._manual_stop_requested = True
             server_proc = self._server_proc

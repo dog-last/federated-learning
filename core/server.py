@@ -36,12 +36,12 @@ class Server:
             return torch.device("mps")
         return torch.device("cpu")
 
-    def __init__(self, config_path):
+    def __init__(self, config_path, project_root=None):
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
         self.config_path = config_path
-        self.project_root = os.path.dirname(os.path.abspath(config_path))
+        self.project_root = project_root or os.path.dirname(os.path.abspath(config_path))
         preferred_device = self.config.get("experiment", {}).get("device", "auto")
         self.device = self._select_device(preferred_device)
 

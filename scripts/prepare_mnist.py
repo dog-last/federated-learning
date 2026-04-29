@@ -84,11 +84,15 @@ def prepare_mnist_federated(root_dir="./data", num_clients=3, seed=42):
         class_indices[label].append(idx)
     
     # Define class ranges for each client (non-IID)
-    client_class_ranges = [
-        list(range(0, 4)),    # Client 1: digits 0-3
-        list(range(4, 7)),    # Client 2: digits 4-6
-        list(range(7, 10))    # Client 3: digits 7-9
-    ]
+    # Distribute 10 classes across num_clients as evenly as possible
+    classes_per_client = max(1, 10 // num_clients)
+    remainder = 10 % num_clients
+    client_class_ranges = []
+    start = 0
+    for i in range(num_clients):
+        count = classes_per_client + (1 if i < remainder else 0)
+        client_class_ranges.append(list(range(start, start + count)))
+        start += count
     
     client_indices = [[] for _ in range(num_clients)]
     

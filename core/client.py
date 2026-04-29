@@ -35,11 +35,11 @@ class Client:
             return torch.device("mps")
         return torch.device("cpu")
 
-    def __init__(self, config_path, client_id):
+    def __init__(self, config_path, client_id, project_root=None):
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.project_root = project_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.client_id = client_id
         preferred_device = self.config.get("experiment", {}).get("device", "auto")
         self.device = self._select_device(preferred_device)
@@ -73,9 +73,21 @@ class Client:
             self.client_model, self.shadow_server_model = get_model("splitfed")
             self.client_model.to(self.device)
             self.shadow_server_model.to(self.device)
+            self.optimizer = torch.optim.SGD(
+                self.client_model.parameters(),
+                lr=self.default_lr,
+                momentum=self.default_momentum,
+                weight_decay=self.default_weight_decay,
+            )
         else:
             self.model = get_model("centralized")
             self.model.to(self.device)
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=self.default_lr,
+                momentum=self.default_momentum,
+                weight_decay=self.default_weight_decay,
+            )
 
         self.logger = logging.getLogger(client_id)
         self.train_loader, self.val_loader, self.test_loader = self._load_local_data()
