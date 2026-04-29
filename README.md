@@ -4,19 +4,25 @@
 
 ## 快速开始
 
-1. 安装依赖
+1. 安装依赖（使用 [uv](https://docs.astral.sh/uv/)）
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 2. 启动实验
 
 ```bash
-python manager.py
+uv run python manager.py
 ```
 
-3. 查看输出
+3. 运行测试
+
+```bash
+uv run pytest
+```
+
+4. 查看输出
 
 - 训练日志：`logs/`
 - 监控服务：`http://127.0.0.1:9000`
@@ -41,6 +47,6 @@ python manager.py
 
 ## 开发提示
 
-- 默认 Python 解释器来自环境变量 `PYTHON_BIN`，未设置时回退到项目当前使用的 Miniconda 环境。
+- 默认 Python 解释器来自环境变量 `PYTHON_BIN`，未设置时使用当前 Python 解释器（推荐通过 `uv run` 运行）。
 - 运行前请确认 `data/splits/` 下的 4 个数据文件存在且格式正确；`manager.py` 会在缺失时自动调用数据准备脚本。
 - 若要修改网络行为、训练超时或监控显示方式，优先检查 `config.json` 和 `utils/monitor_api.py`。
