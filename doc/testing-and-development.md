@@ -19,13 +19,16 @@ tests/
 │   ├── test_scripts.py            # 脚本测试
 │   ├── test_server.py             # 服务端逻辑测试
 │   ├── test_server_extended.py    # 服务端扩展测试
+│   ├── test_server_straggler.py   # Straggler 处理测试
+│   ├── test_ring_node.py          # 环形节点测试
 │   ├── test_training_controller.py          # 训练控制器测试
-│   └── test_training_controller_extended.py # 训练控制器扩展测试
+│   ├── test_training_controller_extended.py # 训练控制器扩展测试
+│   └── test_config.py             # 配置测试
 │
 └── integration/                   # 集成测试
     ├── test_client_server.py      # 客户端-服务端集成测试
     ├── test_data_preparation.py   # 数据准备集成测试
-    └── test_tcp.py                # TCP 通信集成测试
+    ├── test_tcp.py                # TCP 通信集成测试
     └── test_training_controller_integration.py  # 训练控制器集成测试
 ```
 
@@ -46,7 +49,8 @@ uv run pytest tests/integration/
 # 详细输出
 uv run pytest -v
 
-# 运行特定测试文件
+# 运行特定
+测试文件
 uv run pytest tests/unit/test_server.py -v
 
 # 运行特定测试函数
@@ -140,6 +144,34 @@ class TestServer:
         """使用 mock 测试"""
         mock_socket = mocker.patch('socket.socket')
         # 测试逻辑...
+```
+
+### Ring 模式测试示例
+
+```python
+# tests/unit/test_ring_node.py
+import pytest
+from core.ring_node import RingNode
+
+class TestRingNode:
+    def test_ring_node_init(self, tmp_path):
+        """测试环节点初始化"""
+        config = {
+            "experiment": {"mode": "ring"},
+            "topology": {
+                "nodes": [
+                    {"id": 1, "host": "127.0.0.1", "port": 8101}
+                ]
+            }
+        }
+        node = RingNode(config, 1)
+        assert node.node_id == 1
+        assert node.mode == "ring"
+
+    def test_ring_topology_routing(self):
+        """测试环形拓扑路由"""
+        # 测试节点间的正确连接
+        ...
 ```
 
 ### 集成测试示例
@@ -299,6 +331,13 @@ A:
 2. 确保数据文件已生成
 3. 单独运行集成测试查看详细错误
 
+### Q: Ring 模式测试失败？
+
+A:
+1. 确保所有环节点端口未被占用
+2. 检查数据文件是否正确命名（`client_1_data.pt` 等）
+3. 查看节点日志了解连接问题
+
 ### Q: 如何 mock 外部依赖？
 
 A:
@@ -314,7 +353,8 @@ def test_with_mock(mocker):
 
 ## 扩展方向
 
-- **压力测试**：模拟大量客户端并发
+- **压力测试**：模拟大量客户端/节点并发
 - **故障注入**：模拟网络分区、节点宕机
 - **性能基准**：记录训练时间、通信开销
 - **端到端测试**：完整训练流程验证
+- **Ring 模式测试**：验证环形拓扑正确性、节点协调、环通信
