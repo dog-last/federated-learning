@@ -1,0 +1,56 @@
+mode: decentralized
+
+model:
+  name: "simple_cnn"
+  input_channels: 1
+  num_classes: 10
+
+dataset:
+  name: "mnist"
+  data_dir: "./data"
+  num_clients: 3
+  partition_strategy: "non_iid"
+  alpha: 0.5
+
+training:
+  rounds: 10
+  epochs_per_round: 2
+  learning_rate: 0.01
+  batch_size: 32
+  momentum: 0.9
+  weight_decay: 0.0001
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.001
+    monitor: "accuracy"  # "accuracy" or "loss"
+    mode: "max"  # "max" for accuracy, "min" for loss
+
+p2p:
+  topology: "ring"
+  heartbeat_interval: 5.0
+  heartbeat_timeout: 10.0
+  retry_count: 3
+  retry_delay: 1.0
+
+peers:
+  local: true
+  nodes:
+    - { id: 1, host: "127.0.0.1", port: 9001 }
+    - { id: 2, host: "127.0.0.1", port: 9002 }
+    - { id: 3, host: "127.0.0.1", port: 9003 }
+
+aggregator:
+  name: "fedprox"
+  fedprox_mu: 0.01
+
+logging:
+  level: "INFO"
+  log_dir: "./logs"
+  console_output: true
+  file_output: true
+
+output:
+  checkpoint_dir: "./outputs/checkpoints"
+  figure_dir: "./outputs/figures"
+  save_checkpoint_every: 5
