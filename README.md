@@ -60,7 +60,20 @@ uv sync
 
 这会安装所有生产依赖和开发依赖（pytest 等）。
 
-### 3. 运行联邦学习训练
+### 3. 构建监控面板前端（使用 Web 模式时需要）
+
+如果使用 `render_mode: "web"` 的监控面板，需先构建前端：
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+```
+
+构建产物生成在 `web/static/` 目录下。若仅使用终端渲染模式（`live`/`plain`/`auto`），可跳过此步。
+
+### 4. 运行联邦学习训练
 
 #### 方式一：使用 manager.py（推荐）
 
@@ -99,7 +112,7 @@ uv run python -m core.ring_node 2
 uv run python -m core.ring_node 3
 ```
 
-### 4. 查看训练状态
+### 5. 查看训练状态
 
 - **训练日志**：`logs/` 目录下的 `.log` 文件
 - **监控面板**：http://127.0.0.1:9000

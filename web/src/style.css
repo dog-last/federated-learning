@@ -166,7 +166,7 @@ body {
 
 /* Event Log */
 .events-card {
-    flex: 0 0 200px;
+    flex: 0 0 400px;
     overflow: hidden;
     display: flex;
     flex-direction: column;

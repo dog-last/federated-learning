@@ -83,7 +83,16 @@
 
 ### Web 仪表盘模式
 
-当 `render_mode` 设为 `web` 时，监控服务会在启动时自动挂载网页仪表盘，无需额外操作。
+当 `render_mode` 设为 `web` 时，监控服务会在启动时自动挂载网页仪表盘。
+
+> **首次使用前需构建前端**：
+> ```bash
+> cd web
+> npm install
+> npm run build
+> cd ..
+> ```
+> 构建产物输出到 `web/static/` 目录。若修改了 `web/src/` 下的前端源码，需重新执行 `npm run build`。
 
 - **访问地址**：`http://{api_host}:{api_port}/dashboard`
 - **实时通信**：通过 WebSocket (`/ws`) 推送所有训练事件
@@ -141,7 +150,8 @@
 ## 6. 开发注意点
 
 - `monitor_api.py` 需要同时兼容直接运行和模块方式运行
-- 若修改前端或控制台展示逻辑，尽量保持事件结构稳定，否则 `Training`Controller 和上层上报代码都要同步调整
+- 若修改前端或控制台展示逻辑，尽量保持事件结构稳定，否则 `TrainingController` 和上层上报代码都要同步调整
 - 如果新增可视化字段，建议先在监控事件里加，再在渲染层消费，避免耦合训练逻辑
 - Ring 模式和 Centralized 模式共享监控接口，但事件类型不同
 - 监控服务使用 Rich 库进行终端渲染，需要终端支持 ANSI 转义序列
+- 前端源码在 `web/src/` 下，构建后输出到 `web/static/`；修改前端源码后需执行 `cd web && npm run build` 重新构建

@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict
 
@@ -30,7 +31,35 @@ from utils.training_controller import TrainingController
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - MONITOR - %(levelname)s - %(message)s")
 
-app = FastAPI()
+
+def _on_startup():
+    if _is_web_mode():
+        try:
+            config = _read_config()
+            host = config.get("monitoring", {}).get("api_host", "127.0.0.1")
+            port = config.get("monitoring", {}).get("api_port", 9000)
+            dashboard_url = f"http://{host}:{port}/dashboard"
+            print(f"\n  Dashboard: {dashboard_url}\n", flush=True)
+            import webbrowser
+            import threading
+            def open_browser():
+                try:
+                    if not os.environ.get("WSL_DISTRO_NAME"):
+                        webbrowser.open(dashboard_url)
+                except Exception:
+                    pass
+            threading.Timer(1.5, open_browser).start()
+        except Exception:
+            pass
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _on_startup()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,9 +76,6 @@ CONFIG_PATH = os.environ.get("FED_CONFIG_PATH") or os.path.join(PROJECT_ROOT, "c
 PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
 
 WEB_STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
-
-def _is_web_mode():
-    return progress_renderer.render_mode == "web"
 
 summary = {
     "total_events": 0,
@@ -723,6 +749,13 @@ def _read_config():
         return json.load(f)
 
 
+progress_renderer = ProgressRenderer()
+
+
+def _is_web_mode():
+    return progress_renderer.render_mode == "web"
+
+
 def _write_config(config):
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -1079,31 +1112,6 @@ async def dashboard():
     return FileResponse(index_path)
 
 
-@app.on_event("startup")
-async def on_startup():
-    if _is_web_mode():
-        try:
-            config = _read_config()
-            host = config.get("monitoring", {}).get("api_host", "127.0.0.1")
-            port = config.get("monitoring", {}).get("api_port", 9000)
-            dashboard_url = f"http://{host}:{port}/dashboard"
-            print(f"\n  Dashboard: {dashboard_url}\n", flush=True)
-            # Auto-open browser in web mode (only in non-WSL environments)
-            import webbrowser
-            import threading
-            import os
-            def open_browser():
-                try:
-                    # Skip auto-open in WSL to avoid port binding issues
-                    if not os.environ.get("WSL_DISTRO_NAME"):
-                        webbrowser.open(dashboard_url)
-                except Exception:
-                    pass
-            threading.Timer(1.5, open_browser).start()
-        except Exception:
-            pass
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -1247,9 +1255,6 @@ async def training_stop():
 
 if os.path.isdir(WEB_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
-
-# Initialize progress renderer after all functions are defined
-progress_renderer = ProgressRenderer()
 
 if __name__ == "__main__":
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
