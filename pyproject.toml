@@ -5,11 +5,12 @@ description = "Federated learning framework with centralized and decentralized t
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.1",
+    "matplotlib>=3.10.0",
     "numpy>=2.4.4",
     "rich>=15.0.0",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
-    "uvicorn>=0.46.0",
+    "uvicorn[standard]>=0.46.0",
 ]
 
 [dependency-groups]

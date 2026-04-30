@@ -1,7 +1,10 @@
 """Unit tests for monitor_api module (pure functions only, no server startup)."""
 import asyncio
 import copy
+import os
 import pytest
+import shutil
+import tempfile
 from unittest.mock import patch
 
 from utils.monitor_api import (
@@ -9,7 +12,9 @@ from utils.monitor_api import (
     _apply_config_patch, _editable_field_schema,
     _update_summary, _summary_snapshot, _clear_monitor_state,
     _get_state_snapshot, _get_metrics_history, _collect_metrics,
+    _save_charts_to_output,
     _append_event_sync,
+    PROJECT_ROOT,
     progress_renderer,
 )
 
@@ -454,3 +459,62 @@ class TestStateSnapshot:
         assert history["rounds"] == [1, 2]
         assert history["test_loss"] == [2.3, 1.5]
         assert history["test_acc"] == [0.3, 0.5]
+
+
+class TestWebModeAPI:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+        progress_renderer.render_mode = "web"
+        progress_renderer.live_rendering = False
+
+    def teardown_method(self):
+        progress_renderer.reset()
+
+    def test_state_snapshot_after_events(self):
+        _append_event_sync({"event_type": "manager_start", "source": "manager", "experiment": {"mode": "centralized", "global_epochs": 5}, "topology": {"clients": [{"id": "client_1"}], "client_count": 1}})
+        _append_event_sync({"event_type": "round_start", "source": "server", "round": 1, "total_epochs": 5, "expected_clients": 1})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3})
+        state = _get_state_snapshot()
+        assert state["mode"] == "centralized"
+        assert state["current_round"] == 1
+        assert state["epoch_total"] == 5
+
+    def test_metrics_history_after_rounds(self):
+        # Set epoch_total high enough to avoid auto-save triggering during test
+        progress_renderer.epoch_total = 10
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.5, "test_acc": 0.5, "train_loss": 1.8, "train_acc": 0.4})
+        history = _get_metrics_history()
+        assert history["rounds"] == [1, 2]
+        assert history["test_loss"] == [2.0, 1.5]
+        assert history["train_acc"] == [0.2, 0.4]
+
+    def test_web_mode_no_rich_rendering(self):
+        assert progress_renderer.live_rendering is False
+
+    def test_per_client_metrics(self):
+        _append_event_sync({"event_type": "local_round_done", "source": "client_1", "client_id": "client_1", "round": 1, "train_loss": 1.5, "train_acc": 0.6, "test_acc": 0.55})
+        history = _get_metrics_history()
+        assert "client_1" in history["per_client"]
+        assert history["per_client"]["client_1"]["train_loss"] == [1.5]
+
+    def test_metrics_cleared_on_reset(self):
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3})
+        _clear_monitor_state()
+        history = _get_metrics_history()
+        assert history["rounds"] == []
+
+    def test_auto_save_on_training_end(self):
+        progress_renderer.epoch_total = 2
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.0, "test_acc": 0.7, "train_loss": 1.2, "train_acc": 0.6})
+        # Check that output directory was created and files exist
+        output_dir = os.path.join(PROJECT_ROOT, "output")
+        assert os.path.exists(os.path.join(output_dir, "loss_curve.png"))
+        assert os.path.exists(os.path.join(output_dir, "accuracy_curve.png"))
+        assert os.path.exists(os.path.join(output_dir, "metrics.json"))
+        # Cleanup
+        import shutil
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)

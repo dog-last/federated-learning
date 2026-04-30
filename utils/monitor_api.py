@@ -22,6 +22,10 @@ except Exception:
     def _cell_len(value):
         return len(str(value))
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from utils.training_controller import TrainingController
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - MONITOR - %(levelname)s - %(message)s")
@@ -39,7 +43,7 @@ logs = []
 lock = threading.Lock()
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
+CONFIG_PATH = os.environ.get("FED_CONFIG_PATH") or os.path.join(PROJECT_ROOT, "config.json")
 PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
 
 WEB_STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
@@ -141,9 +145,9 @@ class ProgressRenderer:
 
         self.key_log_path = os.path.join(PROJECT_ROOT, "logs", "monitor_key_events.log")
         os.makedirs(os.path.dirname(self.key_log_path), exist_ok=True)
-        
-        self.render_mode = self._load_render_mode()
+
         self.console = Console(highlight=False)
+        self.render_mode = self._load_render_mode()
         self.live_rendering = self.render_mode not in {"plain", "web"} and self.console.is_terminal
         self.live = None
         self.ws_clients: set = set()
@@ -183,6 +187,9 @@ class ProgressRenderer:
         mode = str((config.get("monitoring", {}) or {}).get("render_mode", "auto")).strip().lower()
         if mode not in {"auto", "live", "plain", "web"}:
             mode = "auto"
+        # If explicitly set to "web", respect user choice regardless of terminal detection
+        if mode == "web":
+            return "web"
         if mode == "auto" and not self.console.is_terminal:
             mode = "web"
         return mode
@@ -296,6 +303,10 @@ class ProgressRenderer:
     def _render_status(self, force: bool = False):
         now = time.time()
         if not force and now - self.last_refresh_at < self.refresh_interval:
+            return
+
+        # Skip rendering in web mode
+        if self.render_mode == "web":
             return
 
         dashboard = self._generate_dashboard()
@@ -655,9 +666,13 @@ class ProgressRenderer:
                     if self.client_states[cid].get("status") in {"training", "trained", "sending", "receiving", "waiting", "ready"}:
                         self.client_states[cid]["status"] = "done"
                         self.client_states[cid]["progress"] = 1.0
+                # Only show metrics in key events if we have them (from ring_global_eval)
+                # ring_round_end is sent by all nodes, but only initiator has global metrics
+                loss_val = item.get("test_loss", self.last_round_loss)
+                acc_val = item.get("test_acc", self.last_round_acc)
                 self._write(
                     f"[RING] round {round_id}/{self.epoch_total} done "
-                    f"loss={_fmt_float(self.last_round_loss)} acc={_fmt_float(self.last_round_acc)} "
+                    f"loss={_fmt_float(loss_val)} acc={_fmt_float(acc_val)} "
                     f"avg_round={_fmt_seconds(self._avg(self.round_durations))} "
                     f"sent={_fmt_bytes(self.total_bytes_sent)} recv={_fmt_bytes(self.total_bytes_recv)}"
                 )
@@ -681,9 +696,6 @@ class ProgressRenderer:
                 self.phase = label
                 self._write(f"[CTRL] {label} source={source}")
                 self._render_status(force=True)
-
-
-progress_renderer = ProgressRenderer()
 
 
 def _clear_monitor_state():
@@ -894,13 +906,14 @@ def _collect_metrics(item):
             metrics_history["test_loss"].append(item.get("test_loss"))
             metrics_history["test_acc"].append(item.get("test_acc"))
     elif event_type == "ring_global_eval":
+        # ring_global_eval only has test_loss and test_acc (global evaluation)
         round_id = int(item.get("round", 0) or 0)
         if round_id not in metrics_history["rounds"]:
             metrics_history["rounds"].append(round_id)
-            metrics_history["train_loss"].append(item.get("train_loss"))
-            metrics_history["train_acc"].append(item.get("train_acc"))
-            metrics_history["val_loss"].append(item.get("val_loss"))
-            metrics_history["val_acc"].append(item.get("val_acc"))
+            metrics_history["train_loss"].append(None)
+            metrics_history["train_acc"].append(None)
+            metrics_history["val_loss"].append(None)
+            metrics_history["val_acc"].append(None)
             metrics_history["test_loss"].append(item.get("test_loss"))
             metrics_history["test_acc"].append(item.get("test_acc"))
     elif event_type == "local_round_done":
@@ -925,6 +938,14 @@ def _collect_metrics(item):
             if item.get("test_acc") is not None:
                 metrics_history["test_acc"][idx] = item.get("test_acc")
 
+    # Auto-save charts when training ends (last round completed or shutdown event)
+    if event_type in {"target_reached", "manager_stop", "shutdown"}:
+        _save_charts_to_output()
+    elif event_type == "round_end":
+        round_id = int(item.get("round", 0) or 0)
+        if round_id >= progress_renderer.epoch_total:
+            _save_charts_to_output()
+
 
 def _get_metrics_history():
     with lock:
@@ -938,6 +959,93 @@ def _get_metrics_history():
             "test_acc": list(metrics_history["test_acc"]),
             "per_client": {k: dict(v) for k, v in metrics_history["per_client"].items()},
         }
+
+
+def _save_charts_to_output(output_dir=None):
+    if output_dir is None:
+        output_dir = os.path.join(PROJECT_ROOT, "output")
+    # Ensure output directory exists before saving
+    os.makedirs(output_dir, exist_ok=True)
+    if not metrics_history["rounds"]:
+        return
+
+    rounds = metrics_history["rounds"]
+
+    # Loss curve
+    fig, ax = plt.subplots(figsize=(10, 6))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#161b22')
+    if any(v is not None for v in metrics_history["train_loss"]):
+        ax.plot(rounds, metrics_history["train_loss"], "o-", label="Train Loss", color="#58a6ff", markersize=4)
+    if any(v is not None for v in metrics_history["val_loss"]):
+        ax.plot(rounds, metrics_history["val_loss"], "s--", label="Val Loss", color="#f0883e", markersize=4)
+    if any(v is not None for v in metrics_history["test_loss"]):
+        ax.plot(rounds, metrics_history["test_loss"], "^:", label="Test Loss", color="#3fb950", markersize=4)
+    ax.set_xlabel("Round", color="#c9d1d9")
+    ax.set_ylabel("Loss", color="#c9d1d9")
+    ax.set_title("Training Loss Curve", color="#c9d1d9", fontsize=14)
+    ax.legend(facecolor='#161b22', edgecolor='#30363d', labelcolor='#c9d1d9')
+    ax.tick_params(colors='#8b949e')
+    ax.grid(True, alpha=0.3, color='#30363d')
+    for spine in ax.spines.values():
+        spine.set_color('#30363d')
+    fig.savefig(os.path.join(output_dir, "loss_curve.png"), dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+    # Accuracy curve
+    fig, ax = plt.subplots(figsize=(10, 6))
+    fig.patch.set_facecolor('#0d1117')
+    ax.set_facecolor('#161b22')
+    if any(v is not None for v in metrics_history["train_acc"]):
+        ax.plot(rounds, metrics_history["train_acc"], "o-", label="Train Acc", color="#58a6ff", markersize=4)
+    if any(v is not None for v in metrics_history["val_acc"]):
+        ax.plot(rounds, metrics_history["val_acc"], "s--", label="Val Acc", color="#f0883e", markersize=4)
+    if any(v is not None for v in metrics_history["test_acc"]):
+        ax.plot(rounds, metrics_history["test_acc"], "^:", label="Test Acc", color="#3fb950", markersize=4)
+    ax.set_xlabel("Round", color="#c9d1d9")
+    ax.set_ylabel("Accuracy", color="#c9d1d9")
+    ax.set_title("Training Accuracy Curve", color="#c9d1d9", fontsize=14)
+    ax.legend(facecolor='#161b22', edgecolor='#30363d', labelcolor='#c9d1d9')
+    ax.tick_params(colors='#8b949e')
+    ax.grid(True, alpha=0.3, color='#30363d')
+    ax.set_ylim(0, 1.05)
+    for spine in ax.spines.values():
+        spine.set_color('#30363d')
+    fig.savefig(os.path.join(output_dir, "accuracy_curve.png"), dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+    # Client comparison
+    per_client = metrics_history["per_client"]
+    if per_client:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig.patch.set_facecolor('#0d1117')
+        colors = ["#58a6ff", "#f0883e", "#3fb950", "#bc8cff", "#ff7b72", "#79c0ff"]
+        for idx, (cid, data) in enumerate(per_client.items()):
+            c = colors[idx % len(colors)]
+            if data["rounds"] and any(v is not None for v in data["train_loss"]):
+                axes[0].plot(data["rounds"], data["train_loss"], "o-", label=cid, color=c, markersize=4)
+            if data["rounds"] and any(v is not None for v in data["train_acc"]):
+                axes[1].plot(data["rounds"], data["train_acc"], "o-", label=cid, color=c, markersize=4)
+        for ax in axes:
+            ax.set_facecolor('#161b22')
+            ax.tick_params(colors='#8b949e')
+            ax.grid(True, alpha=0.3, color='#30363d')
+            for spine in ax.spines.values():
+                spine.set_color('#30363d')
+            ax.legend(facecolor='#161b22', edgecolor='#30363d', labelcolor='#c9d1d9')
+        axes[0].set_xlabel("Round", color="#c9d1d9")
+        axes[0].set_ylabel("Train Loss", color="#c9d1d9")
+        axes[0].set_title("Per-Client Train Loss", color="#c9d1d9", fontsize=14)
+        axes[1].set_xlabel("Round", color="#c9d1d9")
+        axes[1].set_ylabel("Train Accuracy", color="#c9d1d9")
+        axes[1].set_title("Per-Client Train Accuracy", color="#c9d1d9", fontsize=14)
+        axes[1].set_ylim(0, 1.05)
+        fig.savefig(os.path.join(output_dir, "client_comparison.png"), dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+        plt.close(fig)
+
+    # Raw metrics JSON
+    with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(_get_metrics_history(), f, ensure_ascii=False, indent=2, default=str)
 
 
 def _append_event_sync(item):
@@ -978,7 +1086,20 @@ async def on_startup():
             config = _read_config()
             host = config.get("monitoring", {}).get("api_host", "127.0.0.1")
             port = config.get("monitoring", {}).get("api_port", 9000)
-            print(f"\n  Dashboard: http://{host}:{port}/dashboard\n", flush=True)
+            dashboard_url = f"http://{host}:{port}/dashboard"
+            print(f"\n  Dashboard: {dashboard_url}\n", flush=True)
+            # Auto-open browser in web mode (only in non-WSL environments)
+            import webbrowser
+            import threading
+            import os
+            def open_browser():
+                try:
+                    # Skip auto-open in WSL to avoid port binding issues
+                    if not os.environ.get("WSL_DISTRO_NAME"):
+                        webbrowser.open(dashboard_url)
+                except Exception:
+                    pass
+            threading.Timer(1.5, open_browser).start()
         except Exception:
             pass
 
@@ -1126,6 +1247,9 @@ async def training_stop():
 
 if os.path.isdir(WEB_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
+
+# Initialize progress renderer after all functions are defined
+progress_renderer = ProgressRenderer()
 
 if __name__ == "__main__":
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
