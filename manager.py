@@ -98,6 +98,7 @@ def start_experiment(config_path=None):
 
     env = os.environ.copy()
     env["PYTHONPATH"] = root
+    env["FED_CONFIG_PATH"] = os.path.abspath(config_path)
 
     monitor_proc = subprocess.Popen(
         [
