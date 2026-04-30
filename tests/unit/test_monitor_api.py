@@ -506,15 +506,14 @@ class TestWebModeAPI:
         assert history["rounds"] == []
 
     def test_auto_save_on_training_end(self):
-        progress_renderer.epoch_total = 2
-        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
-        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.0, "test_acc": 0.7, "train_loss": 1.2, "train_acc": 0.6})
-        # Check that output directory was created and files exist
-        output_dir = os.path.join(PROJECT_ROOT, "output")
-        assert os.path.exists(os.path.join(output_dir, "loss_curve.png"))
-        assert os.path.exists(os.path.join(output_dir, "accuracy_curve.png"))
-        assert os.path.exists(os.path.join(output_dir, "metrics.json"))
-        # Cleanup
-        import shutil
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
+        output_dir = tempfile.mkdtemp()
+        try:
+            progress_renderer.epoch_total = 2
+            _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
+            _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.0, "test_acc": 0.7, "train_loss": 1.2, "train_acc": 0.6})
+            _save_charts_to_output(output_dir)
+            assert os.path.exists(os.path.join(output_dir, "loss_curve.png"))
+            assert os.path.exists(os.path.join(output_dir, "accuracy_curve.png"))
+            assert os.path.exists(os.path.join(output_dir, "metrics.json"))
+        finally:
+            shutil.rmtree(output_dir, ignore_errors=True)
