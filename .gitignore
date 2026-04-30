@@ -10,3 +10,7 @@ logs/
 # pytest
 .pytest_cache/
 .coverage*
+
+docs/
+
+output/

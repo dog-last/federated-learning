@@ -349,6 +349,9 @@ class Client:
             "num_samples": len(self.train_loader.dataset),
             "train_loss": train_loss,
             "train_acc": train_acc,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+            "test_loss": test_loss,
             "test_acc": test_acc,
         }
         self.monitor.post(
@@ -468,6 +471,9 @@ class Client:
             "num_samples": len(self.train_loader.dataset),
             "train_loss": train_loss,
             "train_acc": train_acc,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+            "test_loss": test_loss,
             "test_acc": test_acc,
         }
         self.monitor.post(

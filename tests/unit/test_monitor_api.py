@@ -1,12 +1,20 @@
 """Unit tests for monitor_api module (pure functions only, no server startup)."""
+import asyncio
 import copy
+import os
 import pytest
+import shutil
+import tempfile
 from unittest.mock import patch
 
 from utils.monitor_api import (
     _fmt_float, _fmt_seconds, _fmt_int, _fmt_bytes, _fmt_rate,
     _apply_config_patch, _editable_field_schema,
     _update_summary, _summary_snapshot, _clear_monitor_state,
+    _get_state_snapshot, _get_metrics_history, _collect_metrics,
+    _save_charts_to_output,
+    _append_event_sync,
+    PROJECT_ROOT,
     progress_renderer,
 )
 
@@ -377,3 +385,136 @@ class TestProgressRenderer:
     def test_load_render_mode_from_env(self):
         with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'plain'}):
             assert progress_renderer._load_render_mode() == "plain"
+
+
+def test_load_render_mode_web_from_env():
+    with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'web'}):
+        assert progress_renderer._load_render_mode() == "web"
+
+
+def test_web_mode_disables_rich_rendering():
+    progress_renderer.reset()
+    with patch.dict('os.environ', {'MONITOR_RENDER_MODE': 'web'}):
+        progress_renderer.render_mode = progress_renderer._load_render_mode()
+        progress_renderer.live_rendering = progress_renderer.render_mode not in {"plain", "web"} and progress_renderer.console.is_terminal
+    assert progress_renderer.render_mode == "web"
+    assert progress_renderer.live_rendering is False
+
+
+class TestWebSocketBroadcast:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+
+    def test_ws_clients_exists(self):
+        assert hasattr(progress_renderer, 'ws_clients')
+        assert isinstance(progress_renderer.ws_clients, set)
+
+    def test_broadcast_event_no_crash_without_clients(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.ws_clients = set()
+        progress_renderer._ws_loop = None
+        progress_renderer._broadcast_event({"event_type": "test", "source": "unit_test"})
+
+    def test_broadcast_event_with_loop_but_no_clients(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.ws_clients = set()
+        progress_renderer._ws_loop = asyncio.new_event_loop()
+        progress_renderer._broadcast_event({"event_type": "test", "source": "unit_test"})
+        progress_renderer._ws_loop.close()
+        progress_renderer._ws_loop = None
+
+
+class TestStateSnapshot:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+
+    def test_state_snapshot_structure(self):
+        progress_renderer.phase = "training"
+        progress_renderer.mode = "centralized"
+        progress_renderer.current_round = 3
+        progress_renderer.epoch_total = 10
+        state = _get_state_snapshot()
+        assert state["phase"] == "training"
+        assert state["mode"] == "centralized"
+        assert state["current_round"] == 3
+        assert state["epoch_total"] == 10
+        assert "clients" in state
+        assert "key_events" in state
+        assert "source_net_totals" in state
+
+    def test_metrics_history_empty(self):
+        history = _get_metrics_history()
+        assert history["rounds"] == []
+        assert history["train_loss"] == []
+        assert "per_client" in history
+
+    def test_metrics_history_collects_round_end(self):
+        progress_renderer.render_mode = "web"
+        progress_renderer.epoch_total = 3
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.3, "test_acc": 0.3, "train_loss": 2.5, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.5, "test_acc": 0.5, "train_loss": 1.8, "train_acc": 0.4})
+        history = _get_metrics_history()
+        assert history["rounds"] == [1, 2]
+        assert history["test_loss"] == [2.3, 1.5]
+        assert history["test_acc"] == [0.3, 0.5]
+
+
+class TestWebModeAPI:
+    def setup_method(self):
+        _clear_monitor_state()
+        progress_renderer.reset()
+        progress_renderer.render_mode = "web"
+        progress_renderer.live_rendering = False
+
+    def teardown_method(self):
+        progress_renderer.reset()
+
+    def test_state_snapshot_after_events(self):
+        _append_event_sync({"event_type": "manager_start", "source": "manager", "experiment": {"mode": "centralized", "global_epochs": 5}, "topology": {"clients": [{"id": "client_1"}], "client_count": 1}})
+        _append_event_sync({"event_type": "round_start", "source": "server", "round": 1, "total_epochs": 5, "expected_clients": 1})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3})
+        state = _get_state_snapshot()
+        assert state["mode"] == "centralized"
+        assert state["current_round"] == 1
+        assert state["epoch_total"] == 5
+
+    def test_metrics_history_after_rounds(self):
+        # Set epoch_total high enough to avoid auto-save triggering during test
+        progress_renderer.epoch_total = 10
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.5, "test_acc": 0.5, "train_loss": 1.8, "train_acc": 0.4})
+        history = _get_metrics_history()
+        assert history["rounds"] == [1, 2]
+        assert history["test_loss"] == [2.0, 1.5]
+        assert history["train_acc"] == [0.2, 0.4]
+
+    def test_web_mode_no_rich_rendering(self):
+        assert progress_renderer.live_rendering is False
+
+    def test_per_client_metrics(self):
+        _append_event_sync({"event_type": "local_round_done", "source": "client_1", "client_id": "client_1", "round": 1, "train_loss": 1.5, "train_acc": 0.6, "test_acc": 0.55})
+        history = _get_metrics_history()
+        assert "client_1" in history["per_client"]
+        assert history["per_client"]["client_1"]["train_loss"] == [1.5]
+
+    def test_metrics_cleared_on_reset(self):
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3})
+        _clear_monitor_state()
+        history = _get_metrics_history()
+        assert history["rounds"] == []
+
+    def test_auto_save_on_training_end(self):
+        progress_renderer.epoch_total = 2
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3, "train_loss": 2.3, "train_acc": 0.2})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 2, "test_loss": 1.0, "test_acc": 0.7, "train_loss": 1.2, "train_acc": 0.6})
+        # Check that output directory was created and files exist
+        output_dir = os.path.join(PROJECT_ROOT, "output")
+        assert os.path.exists(os.path.join(output_dir, "loss_curve.png"))
+        assert os.path.exists(os.path.join(output_dir, "accuracy_curve.png"))
+        assert os.path.exists(os.path.join(output_dir, "metrics.json"))
+        # Cleanup
+        import shutil
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
