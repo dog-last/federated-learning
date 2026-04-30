@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 
 import torch
@@ -67,6 +68,7 @@ class Client:
         self.straggler_config = self.config["network"].get("stragglers", {}).get(client_id, {"delay": 0.0, "drop_rate": 0.0})
         self.communicator = TCPCommunicator(self.config["network"].get("compression", False))
         self.conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lock = threading.RLock()
 
         self.criterion = nn.CrossEntropyLoss()
         if self.mode == "splitfed":
@@ -172,28 +174,29 @@ class Client:
         bucket[key] = int(bucket.get(key, 0)) + int(inc)
 
     def _record_network(self, direction, message_type, payload_bytes, round_id=None, extra=None):
-        if direction == "out":
-            self.net_stats["bytes_sent"] += int(payload_bytes)
-            self.net_stats["messages_sent"] += 1
-            self._count_type(self.net_stats["sent_by_type"], message_type, 1)
-        else:
-            self.net_stats["bytes_recv"] += int(payload_bytes)
-            self.net_stats["messages_recv"] += 1
-            self._count_type(self.net_stats["recv_by_type"], message_type, 1)
+        with self.lock:
+            if direction == "out":
+                self.net_stats["bytes_sent"] += int(payload_bytes)
+                self.net_stats["messages_sent"] += 1
+                self._count_type(self.net_stats["sent_by_type"], message_type, 1)
+            else:
+                self.net_stats["bytes_recv"] += int(payload_bytes)
+                self.net_stats["messages_recv"] += 1
+                self._count_type(self.net_stats["recv_by_type"], message_type, 1)
 
-        payload = {
-            "mode": self.mode,
-            "direction": direction,
-            "peer": "server",
-            "message_type": message_type,
-            "payload_label": payload_label(message_type),
-            "payload_bytes": int(payload_bytes),
-            "round": round_id,
-            "bytes_sent_total": self.net_stats["bytes_sent"],
-            "bytes_recv_total": self.net_stats["bytes_recv"],
-            "messages_sent_total": self.net_stats["messages_sent"],
-            "messages_recv_total": self.net_stats["messages_recv"],
-        }
+            payload = {
+                "mode": self.mode,
+                "direction": direction,
+                "peer": "server",
+                "message_type": message_type,
+                "payload_label": payload_label(message_type),
+                "payload_bytes": int(payload_bytes),
+                "round": round_id,
+                "bytes_sent_total": self.net_stats["bytes_sent"],
+                "bytes_recv_total": self.net_stats["bytes_recv"],
+                "messages_sent_total": self.net_stats["messages_sent"],
+                "messages_recv_total": self.net_stats["messages_recv"],
+            }
         if extra:
             payload.update(extra)
         self.monitor.post("network_io", **payload)
