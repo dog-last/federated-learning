@@ -555,6 +555,17 @@ class Server:
             self.global_model.load_state_dict(agg)
 
         test_loss, test_acc = self._evaluate_centralized()
+        
+        # Aggregate client metrics
+        total_samples = sum(int(x.get("num_samples", 0)) for x in update_list)
+        if total_samples > 0:
+            train_loss = sum(float(x.get("train_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            train_acc = sum(float(x.get("train_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            val_loss = sum(float(x.get("val_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            val_acc = sum(float(x.get("val_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+        else:
+            train_loss = train_acc = val_loss = val_acc = None
+        
         self.report_metric(
             {
                 "source": "server",
@@ -571,12 +582,16 @@ class Server:
             mode="centralized",
             round=round_id,
             total_epochs=self.max_epochs,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            val_loss=val_loss,
+            val_acc=val_acc,
             test_loss=test_loss,
             test_acc=test_acc,
             received_updates=len(update_list),
             expected_updates=self.num_clients,
             dropped_clients=max(self.num_clients - len(update_list), 0),
-            sample_total=sum(int(x.get("num_samples", 0)) for x in update_list),
+            sample_total=total_samples,
         )
         logging.info("Round %d centralized eval: loss=%.4f acc=%.4f", round_id, test_loss, test_acc)
         return test_acc
@@ -640,6 +655,17 @@ class Server:
             self.global_client_model.load_state_dict(agg)
 
         test_loss, test_acc = self._evaluate_splitfed()
+        
+        # Aggregate client metrics
+        total_samples = sum(int(x.get("num_samples", 0)) for x in update_list)
+        if total_samples > 0:
+            train_loss = sum(float(x.get("train_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            train_acc = sum(float(x.get("train_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            val_loss = sum(float(x.get("val_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+            val_acc = sum(float(x.get("val_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
+        else:
+            train_loss = train_acc = val_loss = val_acc = None
+        
         self.report_metric(
             {
                 "source": "server",
@@ -656,12 +682,16 @@ class Server:
             mode="splitfed",
             round=round_id,
             total_epochs=self.max_epochs,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            val_loss=val_loss,
+            val_acc=val_acc,
             test_loss=test_loss,
             test_acc=test_acc,
             received_updates=len(update_list),
             expected_updates=self.num_clients,
             dropped_clients=max(self.num_clients - len(update_list), 0),
-            sample_total=sum(int(x.get("num_samples", 0)) for x in update_list),
+            sample_total=total_samples,
         )
         logging.info("Round %d splitfed eval: loss=%.4f acc=%.4f", round_id, test_loss, test_acc)
         return test_acc
