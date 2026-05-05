@@ -50,6 +50,8 @@ federated-learning/
 ```bash
 # macOS/Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows
+irm https://astral.sh/uv/install.ps1 | iex
 ```
 
 ### 2. 安装依赖
@@ -67,6 +69,7 @@ uv sync
 ```bash
 cd web
 npm install
+npm install shx --save-dev #安装shx
 npm run build
 cd ..
 ```
