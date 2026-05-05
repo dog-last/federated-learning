@@ -16,6 +16,7 @@ federated-learning/
 ├── config.json             # 主配置文件（训练参数、网络拓扑、监控配置）
 ├── pyproject.toml          # uv 项目配置与依赖管理
 ├── uv.lock                 # 锁定依赖版本
+├── cleanup.py              # 清除端口占用
 │
 ├── core/                   # 核心训练逻辑
 │   ├── server.py           # 联邦学习服务端（聚合、协调）
@@ -81,6 +82,7 @@ cd ..
 #### 方式一：使用 manager.py（推荐）
 
 ```bash
+python cleanup.py #清除端口占用
 uv run python manager.py
 ```
 
