@@ -2,7 +2,7 @@
   "name": "fl-monitor-dashboard",
   "private": true,
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --outfile=static/dashboard.js --minify --format=esm && cp src/index.html static/index.html && cp src/style.css static/style.css",
+    "build": "esbuild src/main.ts --bundle --outfile=static/dashboard.js --minify --format=esm && shx cp src/index.html static/ && shx cp src/style.css static/",
     "watch": "esbuild src/main.ts --bundle --outfile=static/dashboard.js --format=esm --watch"
   },
   "devDependencies": {
