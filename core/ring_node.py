@@ -231,6 +231,10 @@ class RingNode:
             "node_id": self.node_id,
             "message_type": message_type,
             "payload_bytes": int(payload_bytes),
+            "bytes_sent_total": int(self.net_stats["bytes_sent"]),
+            "bytes_recv_total": int(self.net_stats["bytes_recv"]),
+            "messages_sent_total": int(self.net_stats["messages_sent"]),
+            "messages_recv_total": int(self.net_stats["messages_recv"]),
             **self.net_stats,
         }
         if extra:
