@@ -1,7 +1,8 @@
 import json
 import time
+import urllib.error
 import urllib.request
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def payload_label(message_type: str) -> str:
@@ -23,28 +24,58 @@ def payload_label(message_type: str) -> str:
 
 
 class MonitorReporter:
-    def __init__(self, api_host: str, api_port: int, source: str):
+    def __init__(self, api_host: str, api_port: int, source: str, timeout: float = 1.0):
         self.url = f"http://{api_host}:{api_port}/report"
         self.source = source
         self.session_seq = 0
+        self.timeout = float(timeout)
 
-    def post(self, event_type: str, **fields: Any) -> None:
+    def _build_payload(self, event_type: str, **fields: Any) -> Dict[str, Any]:
         self.session_seq += 1
-        payload: Dict[str, Any] = {
+        return {
             "ts": time.time(),
             "source": self.source,
             "event_type": event_type,
             "seq": self.session_seq,
             **fields,
         }
+
+    def post(self, event_type: str, **fields: Any) -> None:
+        payload = self._build_payload(event_type, **fields)
         req = urllib.request.Request(
             self.url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=1.0):
+        with urllib.request.urlopen(req, timeout=self.timeout):
             # Fail fast: monitoring channel errors should surface immediately.
             return
+
+    def post_best_effort(self, event_type: str, timeout: Optional[float] = None, **fields: Any) -> bool:
+        payload = self._build_payload(event_type, **fields)
+        req = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout if timeout is None else float(timeout)):
+                return True
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            return False
+
+
+def wait_for_monitor_ready(api_host: str, api_port: int, timeout: float = 10.0, poll_interval: float = 0.2) -> bool:
+    deadline = time.time() + max(float(timeout), 0.0)
+    health_url = f"http://{api_host}:{api_port}/health"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(health_url, timeout=min(max(float(poll_interval), 0.1), 2.0)) as resp:
+                if getattr(resp, "status", 200) == 200:
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            time.sleep(max(float(poll_interval), 0.05))
+    return False
 
 
 def compact_topology(config: Dict[str, Any]) -> Dict[str, Any]:
