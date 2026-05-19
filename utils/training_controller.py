@@ -22,6 +22,7 @@ class TrainingController:
 
         self._server_proc = None
         self._client_procs = []
+        self._ring_mode = False
         self._proc_log_handles = []
         self._watcher = None
         self._manual_stop_requested = False
@@ -35,6 +36,11 @@ class TrainingController:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = os.path.join(self._logs_dir(), f"{role}-{stamp}.log")
         handle = open(path, "a", encoding="utf-8")
+        handle.write(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} - LOG - INFO - "
+            f"Opened process log for role={role}\n"
+        )
+        handle.flush()
         self._proc_log_handles.append(handle)
         return handle
 
@@ -114,6 +120,7 @@ class TrainingController:
 
             self._server_proc = None
             self._client_procs = []
+            self._ring_mode = False
 
         self._close_role_logs()
 
@@ -175,27 +182,46 @@ class TrainingController:
             self._ensure_data(resolved)
             env = os.environ.copy()
             env["PYTHONPATH"] = self.project_root
+            mode = str(resolved.get("experiment", {}).get("mode", "centralized"))
+            self._ring_mode = mode == "ring"
 
-            server_proc = subprocess.Popen(
-                [self.python_bin, "-m", "core.server", "--config", config_path, "--data-path", self.project_root],
-                cwd=self.project_root,
-                env=env,
-                stdout=self._open_role_log("server"),
-                stderr=subprocess.STDOUT,
-            )
-            time.sleep(1)
-
-            client_procs = []
-            for client in resolved["topology"]["clients"]:
-                cid = client["id"]
-                p = subprocess.Popen(
-                    [self.python_bin, "-m", "core.client", cid, "--config", config_path, "--data-path", self.project_root],
+            if self._ring_mode:
+                nodes = resolved.get("topology", {}).get("nodes", [])
+                if not nodes:
+                    raise ValueError("Ring mode requires topology.nodes")
+                client_procs = []
+                for node in nodes:
+                    node_id = str(node["id"])
+                    p = subprocess.Popen(
+                        [self.python_bin, "-m", "core.ring_node", node_id, "--config", config_path, "--data-path", self.project_root],
+                        cwd=self.project_root,
+                        env=env,
+                        stdout=self._open_role_log(f"ring-node-{node_id}"),
+                        stderr=subprocess.STDOUT,
+                    )
+                    client_procs.append(p)
+                server_proc = client_procs[0]
+            else:
+                server_proc = subprocess.Popen(
+                    [self.python_bin, "-m", "core.server", "--config", config_path, "--data-path", self.project_root],
                     cwd=self.project_root,
                     env=env,
-                    stdout=self._open_role_log(f"client-{cid}"),
+                    stdout=self._open_role_log("server"),
                     stderr=subprocess.STDOUT,
                 )
-                client_procs.append(p)
+                time.sleep(1)
+
+                client_procs = []
+                for client in resolved["topology"]["clients"]:
+                    cid = client["id"]
+                    p = subprocess.Popen(
+                        [self.python_bin, "-m", "core.client", cid, "--config", config_path, "--data-path", self.project_root],
+                        cwd=self.project_root,
+                        env=env,
+                        stdout=self._open_role_log(f"client-{cid}"),
+                        stderr=subprocess.STDOUT,
+                    )
+                    client_procs.append(p)
 
             with self._lock:
                 self._server_proc = server_proc
@@ -210,6 +236,7 @@ class TrainingController:
             self._emit(
                 {
                     "event_type": "training_started",
+                    "mode": mode,
                     "server": self._proc_info(server_proc, "server"),
                     "clients": [self._proc_info(p, "client") for p in client_procs],
                 }
@@ -259,6 +286,7 @@ class TrainingController:
             self._stopped_at = time.time()
             self._server_proc = None
             self._client_procs = []
+            self._ring_mode = False
             self._manual_stop_requested = False
 
         self._close_role_logs()
