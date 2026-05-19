@@ -62,6 +62,15 @@ export function initDashboard(): DashboardState {
     return state;
 }
 
+function normalizeSourceId(source: string, mode: string): string {
+    if (!source) return source;
+    if (mode === 'ring') {
+        const match = /^ring_node_(\d+)$/.exec(source);
+        if (match) return `client_${match[1]}`;
+    }
+    return source;
+}
+
 function connectWebSocket(state: DashboardState) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${location.host}/ws`;
@@ -134,7 +143,11 @@ function applyStateSnapshot(state: DashboardState, data: any) {
     state.clients = data.clients || {};
     state.keyEvents = data.key_events || [];
     state.topologyMode = data.mode || 'centralized';
-    state.sourceNetTotals = data.source_net_totals || {};
+    state.sourceNetTotals = {};
+    const rawTotals = data.source_net_totals || {};
+    for (const [source, totals] of Object.entries(rawTotals)) {
+        state.sourceNetTotals[normalizeSourceId(source, data.mode || state.mode)] = totals as { bytes_sent: number; bytes_recv: number };
+    }
     updateHeaderUI(state);
 }
 
@@ -235,7 +248,13 @@ function handleEvent(state: DashboardState, event: any) {
         }
     }
     if (eventType === 'network_io' || eventType === 'send_ack' || eventType === 'recv_ack') {
-        // handled by topology visualization
+        const source = normalizeSourceId(event.source || '', state.mode);
+        if (source) {
+            const bucket = state.sourceNetTotals[source] || { bytes_sent: 0, bytes_recv: 0 };
+            if (typeof event.bytes_sent_total === 'number') bucket.bytes_sent = event.bytes_sent_total;
+            if (typeof event.bytes_recv_total === 'number') bucket.bytes_recv = event.bytes_recv_total;
+            state.sourceNetTotals[source] = bucket;
+        }
     }
 
     updateHeaderUI(state);
