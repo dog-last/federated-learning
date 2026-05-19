@@ -14,6 +14,7 @@ from typing import Dict
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from starlette.requests import ClientDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -76,15 +77,57 @@ CONFIG_PATH = os.environ.get("FED_CONFIG_PATH") or os.path.join(PROJECT_ROOT, "c
 PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
 
 WEB_STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
+LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
+RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
+EVENT_LOG_PATH = os.path.join(LOGS_DIR, f"monitor-events-{RUN_ID}.jsonl")
+SUMMARY_LOG_PATH = os.path.join(LOGS_DIR, f"monitor-summary-{RUN_ID}.json")
 
 summary = {
     "total_events": 0,
+    "runtime": {
+        "run_id": RUN_ID,
+        "started_at": time.time(),
+        "last_event_at": None,
+        "manager_started_at": None,
+        "ended_at": None,
+        "state": "idle",
+        "mode": None,
+    },
     "by_source": defaultdict(int),
     "by_event_type": defaultdict(int),
     "network": {
         "bytes_sent": 0,
         "bytes_recv": 0,
+        "messages_sent": 0,
+        "messages_recv": 0,
         "by_label": defaultdict(int),
+        "by_source": defaultdict(lambda: {"bytes_sent": 0, "bytes_recv": 0, "messages_sent": 0, "messages_recv": 0}),
+    },
+    "training": {
+        "current_round": 0,
+        "completed_rounds": 0,
+        "expected_rounds": 0,
+        "latest": {
+            "train_loss": None,
+            "train_acc": None,
+            "val_loss": None,
+            "val_acc": None,
+            "test_loss": None,
+            "test_acc": None,
+        },
+        "best": {
+            "round": None,
+            "test_acc": None,
+            "test_loss": None,
+        },
+        "per_client_latest": {},
+        "stragglers": {
+            "dropped_total": 0,
+            "delayed_total": 0,
+            "dropped_clients": defaultdict(int),
+            "delayed_clients": defaultdict(int),
+        },
     },
 }
 
@@ -131,6 +174,59 @@ def _fmt_rate(value):
     if value is None:
         return "-"
     return f"{float(value):.2f}/s"
+
+
+def _safe_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _append_event_file(item):
+    with open(EVENT_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
+
+
+def _build_training_digest():
+    rounds = metrics_history["rounds"]
+    latest_round = rounds[-1] if rounds else None
+    test_acc_values = metrics_history["test_acc"]
+    best_idx = None
+    best_acc = None
+    for idx, value in enumerate(test_acc_values):
+        fv = _safe_float(value)
+        if fv is None:
+            continue
+        if best_acc is None or fv > best_acc:
+            best_acc = fv
+            best_idx = idx
+    best_round = rounds[best_idx] if best_idx is not None and best_idx < len(rounds) else None
+    best_loss = metrics_history["test_loss"][best_idx] if best_idx is not None and best_idx < len(metrics_history["test_loss"]) else None
+    return {
+        "latest_round": latest_round,
+        "best_round": best_round,
+        "best_test_acc": best_acc,
+        "best_test_loss": best_loss,
+        "round_count": len(rounds),
+    }
+
+
+def _persist_summary_snapshot():
+    snapshot = _summary_snapshot()
+    with open(SUMMARY_LOG_PATH, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2, default=str)
 
 
 from rich.console import Console, Group
@@ -259,6 +355,8 @@ class ProgressRenderer:
         pairs = [
             ("bytes_sent_total", "bytes_sent"),
             ("bytes_recv_total", "bytes_recv"),
+            ("bytes_sent", "bytes_sent"),
+            ("bytes_recv", "bytes_recv"),
         ]
         for incoming_key, bucket_key in pairs:
             if incoming_key in item and item.get(incoming_key) is not None:
@@ -728,11 +826,33 @@ def _clear_monitor_state():
     with lock:
         logs.clear()
         summary["total_events"] = 0
+        summary["runtime"]["started_at"] = time.time()
+        summary["runtime"]["last_event_at"] = None
+        summary["runtime"]["manager_started_at"] = None
+        summary["runtime"]["ended_at"] = None
+        summary["runtime"]["state"] = "idle"
+        summary["runtime"]["mode"] = None
         summary["by_source"].clear()
         summary["by_event_type"].clear()
         summary["network"]["bytes_sent"] = 0
         summary["network"]["bytes_recv"] = 0
+        summary["network"]["messages_sent"] = 0
+        summary["network"]["messages_recv"] = 0
         summary["network"]["by_label"].clear()
+        summary["network"]["by_source"].clear()
+        summary["training"]["current_round"] = 0
+        summary["training"]["completed_rounds"] = 0
+        summary["training"]["expected_rounds"] = 0
+        for key in summary["training"]["latest"]:
+            summary["training"]["latest"][key] = None
+        summary["training"]["best"]["round"] = None
+        summary["training"]["best"]["test_acc"] = None
+        summary["training"]["best"]["test_loss"] = None
+        summary["training"]["per_client_latest"].clear()
+        summary["training"]["stragglers"]["dropped_total"] = 0
+        summary["training"]["stragglers"]["delayed_total"] = 0
+        summary["training"]["stragglers"]["dropped_clients"].clear()
+        summary["training"]["stragglers"]["delayed_clients"].clear()
         metrics_history["rounds"].clear()
         metrics_history["train_loss"].clear()
         metrics_history["train_acc"].clear()
@@ -875,30 +995,116 @@ def _apply_config_patch(config, patch):
 
 
 def _update_summary(item):
+    event_type = item.get("event_type", item.get("type", "unknown"))
+    source = item.get("source", "unknown")
     summary["total_events"] += 1
-    summary["by_source"][item.get("source", "unknown")] += 1
-    summary["by_event_type"][item.get("event_type", item.get("type", "unknown"))] += 1
+    summary["runtime"]["last_event_at"] = item.get("ts", time.time())
+    summary["by_source"][source] += 1
+    summary["by_event_type"][event_type] += 1
 
     direction = item.get("direction")
     bytes_count = int(item.get("payload_bytes", 0) or 0)
     label = item.get("payload_label", "unknown")
+    source_bucket = summary["network"]["by_source"][source]
     if direction == "out":
         summary["network"]["bytes_sent"] += bytes_count
+        summary["network"]["messages_sent"] += 1
+        source_bucket["bytes_sent"] += bytes_count
+        source_bucket["messages_sent"] += 1
     elif direction == "in":
         summary["network"]["bytes_recv"] += bytes_count
+        summary["network"]["messages_recv"] += 1
+        source_bucket["bytes_recv"] += bytes_count
+        source_bucket["messages_recv"] += 1
     if bytes_count > 0:
         summary["network"]["by_label"][label] += bytes_count
 
+    if event_type == "manager_start":
+        summary["runtime"]["manager_started_at"] = item.get("ts", time.time())
+        summary["runtime"]["state"] = "running"
+        summary["runtime"]["mode"] = (item.get("experiment") or {}).get("mode")
+        summary["training"]["expected_rounds"] = int((item.get("experiment") or {}).get("global_epochs", 0) or 0)
+    elif event_type == "training_started":
+        summary["runtime"]["state"] = "running"
+    elif event_type in {"training_stopped", "manager_stop", "shutdown"}:
+        summary["runtime"]["state"] = "stopped"
+        summary["runtime"]["ended_at"] = item.get("ts", time.time())
+    elif event_type == "round_start":
+        summary["training"]["current_round"] = int(item.get("round", 0) or 0)
+        summary["training"]["expected_rounds"] = int(item.get("total_epochs", summary["training"]["expected_rounds"]) or summary["training"]["expected_rounds"])
+        summary["runtime"]["mode"] = item.get("mode", summary["runtime"]["mode"])
+    elif event_type in {"round_end", "ring_global_eval"}:
+        round_id = int(item.get("round", 0) or 0)
+        summary["training"]["current_round"] = max(summary["training"]["current_round"], round_id)
+        summary["training"]["completed_rounds"] = max(summary["training"]["completed_rounds"], round_id)
+        for metric_name in ("train_loss", "train_acc", "val_loss", "val_acc", "test_loss", "test_acc"):
+            if metric_name in item:
+                summary["training"]["latest"][metric_name] = item.get(metric_name)
+        candidate_acc = _safe_float(item.get("test_acc"))
+        best_acc = _safe_float(summary["training"]["best"]["test_acc"])
+        if candidate_acc is not None and (best_acc is None or candidate_acc >= best_acc):
+            summary["training"]["best"]["round"] = round_id
+            summary["training"]["best"]["test_acc"] = candidate_acc
+            summary["training"]["best"]["test_loss"] = item.get("test_loss")
+    elif event_type in {"local_round_done", "ring_local_train_done"}:
+        client_key = item.get("client_id") or f"node_{item.get('node_id')}" if item.get("node_id") is not None else source
+        summary["training"]["per_client_latest"][client_key] = {
+            "round": item.get("round"),
+            "train_loss": item.get("train_loss"),
+            "train_acc": item.get("train_acc"),
+            "val_loss": item.get("val_loss"),
+            "val_acc": item.get("val_acc"),
+            "test_loss": item.get("test_loss"),
+            "test_acc": item.get("test_acc"),
+        }
+    elif event_type in {"straggler_dropped", "ring_round_dropped"}:
+        client_key = item.get("client_id") or f"node_{item.get('node_id')}" if item.get("node_id") is not None else source
+        summary["training"]["stragglers"]["dropped_total"] += 1
+        summary["training"]["stragglers"]["dropped_clients"][client_key] += 1
+    elif event_type == "straggler_delay":
+        client_key = item.get("client_id") or f"node_{item.get('node_id')}" if item.get("node_id") is not None else source
+        summary["training"]["stragglers"]["delayed_total"] += 1
+        summary["training"]["stragglers"]["delayed_clients"][client_key] += 1
+
 
 def _summary_snapshot():
+    runtime = dict(summary["runtime"])
+    runtime["uptime_seconds"] = max(
+        (_safe_float(runtime["last_event_at"]) or time.time()) - (_safe_float(runtime["started_at"]) or time.time()),
+        0.0,
+    )
+    training = {
+        "current_round": summary["training"]["current_round"],
+        "completed_rounds": summary["training"]["completed_rounds"],
+        "expected_rounds": summary["training"]["expected_rounds"],
+        "latest": dict(summary["training"]["latest"]),
+        "best": dict(summary["training"]["best"]),
+        "per_client_latest": dict(summary["training"]["per_client_latest"]),
+        "stragglers": {
+            "dropped_total": summary["training"]["stragglers"]["dropped_total"],
+            "delayed_total": summary["training"]["stragglers"]["delayed_total"],
+            "dropped_clients": dict(summary["training"]["stragglers"]["dropped_clients"]),
+            "delayed_clients": dict(summary["training"]["stragglers"]["delayed_clients"]),
+        },
+        "digest": _build_training_digest(),
+    }
     return {
         "total_events": summary["total_events"],
+        "runtime": runtime,
         "by_source": dict(summary["by_source"]),
         "by_event_type": dict(summary["by_event_type"]),
         "network": {
             "bytes_sent": summary["network"]["bytes_sent"],
             "bytes_recv": summary["network"]["bytes_recv"],
+            "messages_sent": summary["network"]["messages_sent"],
+            "messages_recv": summary["network"]["messages_recv"],
             "by_label": dict(summary["network"]["by_label"]),
+            "by_source": {k: dict(v) for k, v in summary["network"]["by_source"].items()},
+        },
+        "training": training,
+        "artifacts": {
+            "event_log_path": EVENT_LOG_PATH,
+            "summary_log_path": SUMMARY_LOG_PATH,
         },
         "last_event": logs[-1] if logs else None,
     }
@@ -906,6 +1112,7 @@ def _summary_snapshot():
 
 def _get_state_snapshot():
     with lock:
+        digest = _build_training_digest()
         return {
             "phase": progress_renderer.phase,
             "mode": progress_renderer.mode,
@@ -923,6 +1130,17 @@ def _get_state_snapshot():
             "clients": dict(progress_renderer.client_states),
             "key_events": list(progress_renderer.key_events),
             "source_net_totals": {k: dict(v) for k, v in progress_renderer.source_net_totals.items()},
+            "network_summary": {
+                "bytes_sent": summary["network"]["bytes_sent"],
+                "bytes_recv": summary["network"]["bytes_recv"],
+                "messages_sent": summary["network"]["messages_sent"],
+                "messages_recv": summary["network"]["messages_recv"],
+            },
+            "training_digest": digest,
+            "artifacts": {
+                "event_log_path": EVENT_LOG_PATH,
+                "summary_log_path": SUMMARY_LOG_PATH,
+            },
         }
 
 
@@ -994,9 +1212,13 @@ def _get_metrics_history():
         }
 
 
+def _default_output_dir():
+    return os.path.join(PROJECT_ROOT, "output", RUN_ID)
+
+
 def _save_charts_to_output(output_dir=None):
     if output_dir is None:
-        output_dir = os.path.join(PROJECT_ROOT, "output")
+        output_dir = _default_output_dir()
     # Ensure output directory exists before saving
     os.makedirs(output_dir, exist_ok=True)
     if not metrics_history["rounds"]:
@@ -1082,9 +1304,11 @@ def _save_charts_to_output(output_dir=None):
 
 
 def _append_event_sync(item):
+    _append_event_file(item)
     with lock:
         logs.append(item)
         _update_summary(item)
+        _persist_summary_snapshot()
     progress_renderer.handle(item)
     progress_renderer._broadcast_event(item)
     _collect_metrics(item)
@@ -1133,7 +1357,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.post("/report")
 async def report_metric(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except ClientDisconnect:
+        logging.warning("Client disconnected while uploading monitor event payload")
+        return {"status": "ignored", "reason": "client_disconnected"}
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
     _append_event_sync(data)
     return {"status": "success", "length": len(logs), "total_events": summary["total_events"]}
 
