@@ -7,7 +7,7 @@ import torch
 import sys
 import argparse
 
-from utils.monitoring import MonitorReporter, compact_topology
+from utils.monitoring import MonitorReporter, compact_topology, wait_for_monitor_ready
 
 
 def _project_root():
@@ -23,7 +23,13 @@ def _logs_dir(root):
 def _open_role_log(root, role):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     path = os.path.join(_logs_dir(root), f"{role}-{stamp}.log")
-    return open(path, "a", encoding="utf-8")
+    handle = open(path, "a", encoding="utf-8")
+    handle.write(
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} - LOG - INFO - "
+        f"Opened process log for role={role}\n"
+    )
+    handle.flush()
+    return handle
 
 
 def _python_bin():
@@ -82,6 +88,19 @@ def _graceful_stop(proc, wait_seconds=2.0):
         if proc.poll() is None:
             proc.kill()
 
+
+def _wait_monitor_or_raise(config, monitor_proc, timeout: float = 10.0):
+    host = config["monitoring"]["api_host"]
+    port = int(config["monitoring"]["api_port"])
+    if wait_for_monitor_ready(host, port, timeout=timeout):
+        return
+
+    proc_state = _proc_info(monitor_proc, "monitor")
+    raise RuntimeError(
+        f"Monitor service failed to become ready within {timeout:.1f}s "
+        f"at http://{host}:{port}/health, process={proc_state}"
+    )
+
 def start_experiment(config_path=None):
     root = _project_root()
     py_bin = _python_bin()
@@ -118,9 +137,14 @@ def start_experiment(config_path=None):
         cwd=root,
     )
 
-    time.sleep(2)
-    reporter = MonitorReporter(config['monitoring']['api_host'], int(config['monitoring']['api_port']), "manager")
-    reporter.post(
+    _wait_monitor_or_raise(config, monitor_proc, timeout=10.0)
+    reporter = MonitorReporter(
+        config['monitoring']['api_host'],
+        int(config['monitoring']['api_port']),
+        "manager",
+        timeout=3.0,
+    )
+    reporter.post_best_effort(
         "manager_start",
         topology=compact_topology(config),
         experiment=config.get("experiment", {}),
