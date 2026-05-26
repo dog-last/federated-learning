@@ -12,7 +12,7 @@ from utils.monitor_api import (
     _apply_config_patch, _editable_field_schema,
     _update_summary, _summary_snapshot, _clear_monitor_state,
     _get_state_snapshot, _get_metrics_history, _collect_metrics,
-    _save_charts_to_output,
+    _save_charts_to_output, _runtime_log_record,
     _append_event_sync,
     PROJECT_ROOT,
     progress_renderer,
@@ -498,6 +498,34 @@ class TestWebModeAPI:
         history = _get_metrics_history()
         assert "client_1" in history["per_client"]
         assert history["per_client"]["client_1"]["train_loss"] == [1.5]
+
+    def test_metrics_history_includes_client_only_rounds(self):
+        progress_renderer.epoch_total = 10
+        _append_event_sync({"event_type": "local_round_done", "source": "client_1", "client_id": "client_1", "round": 1, "train_loss": 0.9, "test_acc": 0.7})
+        _append_event_sync({"event_type": "local_round_done", "source": "client_2", "client_id": "client_2", "round": 1, "train_loss": 0.7, "test_acc": 0.8})
+        _append_event_sync({"event_type": "local_round_done", "source": "client_1", "client_id": "client_1", "round": 2, "train_loss": 0.6, "test_acc": 0.82})
+        _append_event_sync({"event_type": "local_round_done", "source": "client_2", "client_id": "client_2", "round": 2, "train_loss": 0.4, "test_acc": 0.88})
+        _append_event_sync({"event_type": "round_end", "source": "server", "round": 3, "train_loss": 0.3, "test_acc": 0.9})
+
+        history = _get_metrics_history()
+
+        assert history["rounds"] == [1, 2, 3]
+        assert history["train_loss"] == [0.8, 0.5, 0.3]
+        assert history["test_acc"] == [0.75, 0.85, 0.9]
+
+    def test_runtime_log_hides_empty_fields_and_keeps_stop_reason(self):
+        record = _runtime_log_record({
+            "event_type": "shutdown",
+            "source": "server",
+            "reason": "rounds_completed",
+            "bytes_sent_total": 1024,
+        })
+
+        assert record["level"] == "CRITICAL"
+        assert "reason=rounds_completed" in record["line"]
+        assert "tx=1024B" in record["line"]
+        assert "peer=-" not in record["line"]
+        assert "rx=-" not in record["line"]
 
     def test_metrics_cleared_on_reset(self):
         _append_event_sync({"event_type": "round_end", "source": "server", "round": 1, "test_loss": 2.0, "test_acc": 0.3})
