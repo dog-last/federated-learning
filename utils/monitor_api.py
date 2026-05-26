@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import threading
@@ -79,9 +80,12 @@ PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
 WEB_STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
-RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-EVENT_LOG_PATH = os.path.join(LOGS_DIR, f"monitor-events-{RUN_ID}.jsonl")
-SUMMARY_LOG_PATH = os.path.join(LOGS_DIR, f"monitor-summary-{RUN_ID}.json")
+RUN_ID = os.environ.get("FED_RUN_ID") or datetime.now().strftime("%Y%m%d%H%M%S")
+RUN_LOG_DIR = os.environ.get("FED_LOG_DIR") or os.path.join(LOGS_DIR, RUN_ID)
+os.makedirs(RUN_LOG_DIR, exist_ok=True)
+EVENT_LOG_PATH = os.path.join(RUN_LOG_DIR, "monitor-events.jsonl")
+SUMMARY_LOG_PATH = os.path.join(RUN_LOG_DIR, "monitor-summary.json")
+RUN_TEXT_LOG_PATH = os.path.join(RUN_LOG_DIR, "run.log")
 
 summary = {
     "total_events": 0,
@@ -199,6 +203,153 @@ def _append_event_file(item):
         f.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
 
 
+def _event_level(item):
+    event_type = item.get("event_type", item.get("type", "unknown"))
+    if item.get("level"):
+        return str(item["level"]).upper()
+    if event_type in {"shutdown", "manager_stop", "training_stopped", "target_reached"}:
+        return "CRITICAL"
+    if "error" in event_type or item.get("error"):
+        return "ERROR"
+    if event_type in {"network_io", "send_ack", "recv_ack", "ring_send", "ring_recv", "batch_progress"}:
+        return "DEBUG"
+    return "INFO"
+
+
+def _event_category(item):
+    event_type = item.get("event_type", item.get("type", "unknown"))
+    if item.get("category"):
+        return str(item["category"]).lower()
+    if event_type in {"network_io", "send_ack", "recv_ack", "round_transport", "ring_send", "ring_recv"}:
+        return "network"
+    if event_type in {"round_start", "round_end", "local_round_done", "batch_progress", "metric", "ring_round_start", "ring_round_end", "ring_local_train_done", "ring_global_eval"}:
+        return "training"
+    if event_type in {"manager_start", "manager_stop", "manager_stopping", "process_spawn", "training_started", "training_stopped", "training_start_requested", "training_stop_requested", "shutdown"}:
+        return "control"
+    if event_type in {"startup", "registered", "topology_update", "ring_node_startup", "ring_node_ready", "ring_all_joined", "ring_mode_started"}:
+        return "topology"
+    return "system"
+
+
+def _fmt_log_value(value, digits=3):
+    if value is None:
+        return "-"
+    try:
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+        return str(value)
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _add_log_part(parts, label, value, digits=3, suffix=""):
+    formatted = _fmt_log_value(value, digits)
+    if formatted == "-":
+        return
+    parts.append(f"{label}={formatted}{suffix}")
+
+
+def _stop_reason_text(item):
+    event_type = str(item.get("event_type", item.get("type", "unknown")))
+    reason = item.get("reason")
+    if reason:
+        return str(reason)
+    if event_type == "target_reached":
+        return "target_accuracy_reached"
+    if event_type == "manager_stop":
+        return "manager_finished"
+    if event_type == "training_stopped":
+        return "training_stopped"
+    if event_type == "shutdown":
+        return "shutdown"
+    return None
+
+
+def _runtime_log_record(item):
+    event_type = str(item.get("event_type", item.get("type", "unknown")))
+    source = str(item.get("source", "unknown"))
+    category = _event_category(item)
+    level = _event_level(item)
+    ts = _safe_float(item.get("ts")) or time.time()
+    dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    fields = {
+        "round": item.get("round"),
+        "peer": item.get("peer"),
+        "direction": item.get("direction"),
+        "message_type": item.get("message_type"),
+        "payload_label": item.get("payload_label"),
+        "payload_bytes": item.get("payload_bytes"),
+        "bytes_sent_total": item.get("bytes_sent_total", item.get("bytes_sent")),
+        "bytes_recv_total": item.get("bytes_recv_total", item.get("bytes_recv")),
+        "messages_sent_total": item.get("messages_sent_total", item.get("messages_sent")),
+        "messages_recv_total": item.get("messages_recv_total", item.get("messages_recv")),
+        "elapsed_seconds": item.get("elapsed_seconds"),
+        "train_loss": item.get("train_loss"),
+        "train_acc": item.get("train_acc"),
+        "test_loss": item.get("test_loss"),
+        "test_acc": item.get("test_acc"),
+        "reason": _stop_reason_text(item),
+        "error": item.get("error"),
+        "status": item.get("status"),
+        "received_count": item.get("received_count", item.get("received_updates")),
+        "expected_count": item.get("expected_count"),
+        "min_clients": item.get("min_clients"),
+        "timeout_seconds": item.get("timeout_seconds"),
+        "target_accuracy": item.get("target_accuracy"),
+        "actual_accuracy": item.get("actual_accuracy"),
+    }
+    parts = []
+    _add_log_part(parts, "round", fields["round"], 0)
+    _add_log_part(parts, "reason", fields["reason"])
+    _add_log_part(parts, "error", fields["error"])
+    _add_log_part(parts, "status", fields["status"])
+    _add_log_part(parts, "peer", fields["peer"])
+    _add_log_part(parts, "dir", fields["direction"])
+    _add_log_part(parts, "msg", fields["message_type"])
+    _add_log_part(parts, "label", fields["payload_label"])
+    _add_log_part(parts, "payload", fields["payload_bytes"], 0, "B")
+    _add_log_part(parts, "tx", fields["bytes_sent_total"], 0, "B")
+    _add_log_part(parts, "rx", fields["bytes_recv_total"], 0, "B")
+    _add_log_part(parts, "tx_msg", fields["messages_sent_total"], 0)
+    _add_log_part(parts, "rx_msg", fields["messages_recv_total"], 0)
+    _add_log_part(parts, "elapsed", fields["elapsed_seconds"], 3, "s")
+    _add_log_part(parts, "received", fields["received_count"], 0)
+    _add_log_part(parts, "expected", fields["expected_count"], 0)
+    _add_log_part(parts, "min_clients", fields["min_clients"], 0)
+    _add_log_part(parts, "timeout", fields["timeout_seconds"], 3, "s")
+    _add_log_part(parts, "target_acc", fields["target_accuracy"])
+    _add_log_part(parts, "actual_acc", fields["actual_accuracy"])
+    _add_log_part(parts, "train_loss", fields["train_loss"])
+    _add_log_part(parts, "train_acc", fields["train_acc"])
+    _add_log_part(parts, "test_loss", fields["test_loss"])
+    _add_log_part(parts, "test_acc", fields["test_acc"])
+    line = f"{dt} [{level}] [{category}] source={source} event={event_type}"
+    if parts:
+        line += " " + " ".join(parts)
+    return {
+        "ts": ts,
+        "line": line,
+        "level": level,
+        "category": category,
+        "source": source,
+        "event_type": event_type,
+        **fields,
+    }
+
+
+def _append_runtime_log(item):
+    record = _runtime_log_record(item)
+    with open(RUN_TEXT_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(record["line"] + "\n")
+    return record
+
+
+def _should_stream_runtime_log(record):
+    if record["event_type"] == "batch_progress":
+        return False
+    return True
+
+
 def _build_training_digest():
     rounds = metrics_history["rounds"]
     latest_round = rounds[-1] if rounds else None
@@ -265,7 +416,7 @@ class ProgressRenderer:
         self.refresh_interval = 0.7
         self.key_events = deque(maxlen=8)
 
-        self.key_log_path = os.path.join(PROJECT_ROOT, "logs", "monitor_key_events.log")
+        self.key_log_path = os.path.join(RUN_LOG_DIR, "monitor-key-events.log")
         os.makedirs(os.path.dirname(self.key_log_path), exist_ok=True)
 
         self.console = Console(highlight=False)
@@ -326,6 +477,8 @@ class ProgressRenderer:
         pct = f" {ratio * 100:5.1f}%"
         bar_width = max(width - len(pct), 1)
         done = int(round(ratio * bar_width))
+        if self.render_mode == "plain":
+            return ("#" * done) + ("." * max(bar_width - done, 0)) + pct
         return ("[green]" + ("█" * done) + "[/green]") + ("[dim]" + ("░" * max(bar_width - done, 0)) + "[/dim]") + pct
 
     def _ensure_client_state(self, client_id: str):
@@ -823,9 +976,19 @@ class ProgressRenderer:
 
 
 def _clear_monitor_state():
+    global RUN_ID, RUN_LOG_DIR, EVENT_LOG_PATH, SUMMARY_LOG_PATH, RUN_TEXT_LOG_PATH
+    new_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    RUN_ID = new_run_id
+    RUN_LOG_DIR = os.path.join(LOGS_DIR, RUN_ID)
+    os.makedirs(RUN_LOG_DIR, exist_ok=True)
+    EVENT_LOG_PATH = os.path.join(RUN_LOG_DIR, "monitor-events.jsonl")
+    SUMMARY_LOG_PATH = os.path.join(RUN_LOG_DIR, "monitor-summary.json")
+    RUN_TEXT_LOG_PATH = os.path.join(RUN_LOG_DIR, "run.log")
+    progress_renderer.key_log_path = os.path.join(RUN_LOG_DIR, "monitor-key-events.log")
     with lock:
         logs.clear()
         summary["total_events"] = 0
+        summary["runtime"]["run_id"] = RUN_ID
         summary["runtime"]["started_at"] = time.time()
         summary["runtime"]["last_event_at"] = None
         summary["runtime"]["manager_started_at"] = None
@@ -1105,6 +1268,7 @@ def _summary_snapshot():
         "artifacts": {
             "event_log_path": EVENT_LOG_PATH,
             "summary_log_path": SUMMARY_LOG_PATH,
+            "run_log_path": RUN_TEXT_LOG_PATH,
         },
         "last_event": logs[-1] if logs else None,
     }
@@ -1140,12 +1304,14 @@ def _get_state_snapshot():
             "artifacts": {
                 "event_log_path": EVENT_LOG_PATH,
                 "summary_log_path": SUMMARY_LOG_PATH,
+                "run_log_path": RUN_TEXT_LOG_PATH,
             },
         }
 
 
 def _collect_metrics(item):
     event_type = item.get("event_type", "")
+    changed = False
     if event_type == "round_end":
         round_id = int(item.get("round", 0) or 0)
         if round_id not in metrics_history["rounds"]:
@@ -1156,6 +1322,7 @@ def _collect_metrics(item):
             metrics_history["val_acc"].append(item.get("val_acc"))
             metrics_history["test_loss"].append(item.get("test_loss"))
             metrics_history["test_acc"].append(item.get("test_acc"))
+            changed = True
     elif event_type == "ring_global_eval":
         # ring_global_eval only has test_loss and test_acc (global evaluation)
         round_id = int(item.get("round", 0) or 0)
@@ -1167,6 +1334,7 @@ def _collect_metrics(item):
             metrics_history["val_acc"].append(None)
             metrics_history["test_loss"].append(item.get("test_loss"))
             metrics_history["test_acc"].append(item.get("test_acc"))
+            changed = True
     elif event_type == "local_round_done":
         client_id = item.get("client_id") or item.get("source", "")
         if client_id:
@@ -1180,14 +1348,32 @@ def _collect_metrics(item):
                 pc["val_acc"].append(item.get("val_acc"))
                 pc["test_loss"].append(item.get("test_loss"))
                 pc["test_acc"].append(item.get("test_acc"))
+                changed = True
+    elif event_type == "ring_local_train_done":
+        node_id = item.get("node_id")
+        client_id = f"client_{node_id}" if node_id is not None else item.get("source", "")
+        if client_id:
+            pc = metrics_history["per_client"][client_id]
+            round_id = int(item.get("round", 0) or 0)
+            if round_id not in pc["rounds"]:
+                pc["rounds"].append(round_id)
+                pc["train_loss"].append(item.get("train_loss"))
+                pc["train_acc"].append(item.get("train_acc"))
+                pc["val_loss"].append(item.get("val_loss"))
+                pc["val_acc"].append(item.get("val_acc"))
+                pc["test_loss"].append(item.get("test_loss"))
+                pc["test_acc"].append(item.get("test_acc"))
+                changed = True
     elif event_type == "metric" and item.get("type") == "global_eval":
         round_id = progress_renderer.current_round
         if metrics_history["rounds"] and metrics_history["rounds"][-1] == round_id:
             idx = len(metrics_history["rounds"]) - 1
             if item.get("test_loss") is not None:
                 metrics_history["test_loss"][idx] = item.get("test_loss")
+                changed = True
             if item.get("test_acc") is not None:
                 metrics_history["test_acc"][idx] = item.get("test_acc")
+                changed = True
 
     # Auto-save charts when training ends (last round completed or shutdown event)
     if event_type in {"target_reached", "manager_stop", "shutdown"}:
@@ -1197,23 +1383,102 @@ def _collect_metrics(item):
         if round_id >= progress_renderer.epoch_total:
             _save_charts_to_output()
 
+    return changed
+
+
+def _average_per_client(metric_key, rounds, per_client):
+    values = []
+    for round_id in rounds:
+        total = 0.0
+        count = 0
+        for data in per_client.values():
+            if round_id not in data["rounds"]:
+                continue
+            idx = data["rounds"].index(round_id)
+            metric_values = data.get(metric_key, [])
+            value = metric_values[idx] if idx < len(metric_values) else None
+            fv = _safe_float(value)
+            if fv is not None:
+                total += fv
+                count += 1
+        values.append(total / count if count else None)
+    return values
+
+
+def _rounds_from_per_client(per_client):
+    rounds = set()
+    for data in per_client.values():
+        rounds.update(int(round_id) for round_id in data.get("rounds", []) if round_id)
+    return sorted(rounds)
+
+
+def _align_metric_series(source_rounds, values, target_rounds):
+    by_round = {}
+    for idx, round_id in enumerate(source_rounds):
+        by_round[int(round_id)] = values[idx] if idx < len(values) else None
+    return [by_round.get(round_id) for round_id in target_rounds]
+
+
+def _fill_missing_with_average(metric_key, rounds, per_client, values):
+    averaged = _average_per_client(metric_key, rounds, per_client)
+    return [value if value is not None else averaged[idx] for idx, value in enumerate(values)]
+
+
+def _clean_metric_series(values):
+    return values if any(v is not None for v in values) else []
+
+
+def _metrics_snapshot_for_display():
+    source_rounds = list(metrics_history["rounds"])
+    per_client = {k: {mk: list(mv) for mk, mv in v.items()} for k, v in metrics_history["per_client"].items()}
+    rounds = sorted(set(source_rounds) | set(_rounds_from_per_client(per_client)))
+    train_loss = _align_metric_series(source_rounds, metrics_history["train_loss"], rounds)
+    train_acc = _align_metric_series(source_rounds, metrics_history["train_acc"], rounds)
+    val_loss = _align_metric_series(source_rounds, metrics_history["val_loss"], rounds)
+    val_acc = _align_metric_series(source_rounds, metrics_history["val_acc"], rounds)
+    test_loss = _align_metric_series(source_rounds, metrics_history["test_loss"], rounds)
+    test_acc = _align_metric_series(source_rounds, metrics_history["test_acc"], rounds)
+
+    if per_client:
+        train_loss = _fill_missing_with_average("train_loss", rounds, per_client, train_loss)
+        train_acc = _fill_missing_with_average("train_acc", rounds, per_client, train_acc)
+        val_loss = _fill_missing_with_average("val_loss", rounds, per_client, val_loss)
+        val_acc = _fill_missing_with_average("val_acc", rounds, per_client, val_acc)
+        test_loss = _fill_missing_with_average("test_loss", rounds, per_client, test_loss)
+        test_acc = _fill_missing_with_average("test_acc", rounds, per_client, test_acc)
+
+    return {
+        "rounds": rounds,
+        "train_loss": train_loss,
+        "train_acc": train_acc,
+        "val_loss": val_loss,
+        "val_acc": val_acc,
+        "test_loss": test_loss,
+        "test_acc": test_acc,
+        "per_client": per_client,
+    }
+
+
+def _metrics_snapshot_for_file():
+    snapshot = _metrics_snapshot_for_display()
+    return {
+        **snapshot,
+        "train_loss": _clean_metric_series(snapshot["train_loss"]),
+        "train_acc": _clean_metric_series(snapshot["train_acc"]),
+        "val_loss": _clean_metric_series(snapshot["val_loss"]),
+        "val_acc": _clean_metric_series(snapshot["val_acc"]),
+        "test_loss": _clean_metric_series(snapshot["test_loss"]),
+        "test_acc": _clean_metric_series(snapshot["test_acc"]),
+    }
+
 
 def _get_metrics_history():
     with lock:
-        return {
-            "rounds": list(metrics_history["rounds"]),
-            "train_loss": list(metrics_history["train_loss"]),
-            "train_acc": list(metrics_history["train_acc"]),
-            "val_loss": list(metrics_history["val_loss"]),
-            "val_acc": list(metrics_history["val_acc"]),
-            "test_loss": list(metrics_history["test_loss"]),
-            "test_acc": list(metrics_history["test_acc"]),
-            "per_client": {k: dict(v) for k, v in metrics_history["per_client"].items()},
-        }
+        return _metrics_snapshot_for_display()
 
 
 def _default_output_dir():
-    return os.path.join(PROJECT_ROOT, "output", RUN_ID)
+    return RUN_LOG_DIR
 
 
 def _save_charts_to_output(output_dir=None):
@@ -1221,21 +1486,22 @@ def _save_charts_to_output(output_dir=None):
         output_dir = _default_output_dir()
     # Ensure output directory exists before saving
     os.makedirs(output_dir, exist_ok=True)
-    if not metrics_history["rounds"]:
+    snapshot = _metrics_snapshot_for_display()
+    if not snapshot["rounds"]:
         return
 
-    rounds = metrics_history["rounds"]
+    rounds = snapshot["rounds"]
 
     # Loss curve
     fig, ax = plt.subplots(figsize=(10, 6))
     fig.patch.set_facecolor('#0d1117')
     ax.set_facecolor('#161b22')
-    if any(v is not None for v in metrics_history["train_loss"]):
-        ax.plot(rounds, metrics_history["train_loss"], "o-", label="Train Loss", color="#58a6ff", markersize=4)
-    if any(v is not None for v in metrics_history["val_loss"]):
-        ax.plot(rounds, metrics_history["val_loss"], "s--", label="Val Loss", color="#f0883e", markersize=4)
-    if any(v is not None for v in metrics_history["test_loss"]):
-        ax.plot(rounds, metrics_history["test_loss"], "^:", label="Test Loss", color="#3fb950", markersize=4)
+    if any(v is not None for v in snapshot["train_loss"]):
+        ax.plot(rounds, snapshot["train_loss"], "o-", label="Train Loss", color="#58a6ff", markersize=4)
+    if any(v is not None for v in snapshot["val_loss"]):
+        ax.plot(rounds, snapshot["val_loss"], "s--", label="Val Loss", color="#f0883e", markersize=4)
+    if any(v is not None for v in snapshot["test_loss"]):
+        ax.plot(rounds, snapshot["test_loss"], "^:", label="Test Loss", color="#3fb950", markersize=4)
     ax.set_xlabel("Round", color="#c9d1d9")
     ax.set_ylabel("Loss", color="#c9d1d9")
     ax.set_title("Training Loss Curve", color="#c9d1d9", fontsize=14)
@@ -1251,12 +1517,12 @@ def _save_charts_to_output(output_dir=None):
     fig, ax = plt.subplots(figsize=(10, 6))
     fig.patch.set_facecolor('#0d1117')
     ax.set_facecolor('#161b22')
-    if any(v is not None for v in metrics_history["train_acc"]):
-        ax.plot(rounds, metrics_history["train_acc"], "o-", label="Train Acc", color="#58a6ff", markersize=4)
-    if any(v is not None for v in metrics_history["val_acc"]):
-        ax.plot(rounds, metrics_history["val_acc"], "s--", label="Val Acc", color="#f0883e", markersize=4)
-    if any(v is not None for v in metrics_history["test_acc"]):
-        ax.plot(rounds, metrics_history["test_acc"], "^:", label="Test Acc", color="#3fb950", markersize=4)
+    if any(v is not None for v in snapshot["train_acc"]):
+        ax.plot(rounds, snapshot["train_acc"], "o-", label="Train Acc", color="#58a6ff", markersize=4)
+    if any(v is not None for v in snapshot["val_acc"]):
+        ax.plot(rounds, snapshot["val_acc"], "s--", label="Val Acc", color="#f0883e", markersize=4)
+    if any(v is not None for v in snapshot["test_acc"]):
+        ax.plot(rounds, snapshot["test_acc"], "^:", label="Test Acc", color="#3fb950", markersize=4)
     ax.set_xlabel("Round", color="#c9d1d9")
     ax.set_ylabel("Accuracy", color="#c9d1d9")
     ax.set_title("Training Accuracy Curve", color="#c9d1d9", fontsize=14)
@@ -1270,7 +1536,7 @@ def _save_charts_to_output(output_dir=None):
     plt.close(fig)
 
     # Client comparison
-    per_client = metrics_history["per_client"]
+    per_client = snapshot["per_client"]
     if per_client:
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         fig.patch.set_facecolor('#0d1117')
@@ -1300,18 +1566,22 @@ def _save_charts_to_output(output_dir=None):
 
     # Raw metrics JSON
     with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(_get_metrics_history(), f, ensure_ascii=False, indent=2, default=str)
+        json.dump(_metrics_snapshot_for_file(), f, ensure_ascii=False, indent=2, default=str)
 
 
 def _append_event_sync(item):
     _append_event_file(item)
+    runtime_log = _append_runtime_log(item)
     with lock:
         logs.append(item)
         _update_summary(item)
         _persist_summary_snapshot()
     progress_renderer.handle(item)
     progress_renderer._broadcast_event(item)
-    _collect_metrics(item)
+    if _should_stream_runtime_log(runtime_log):
+        progress_renderer._broadcast_event({"type": "runtime_log", "data": runtime_log})
+    if _collect_metrics(item):
+        progress_renderer._broadcast_event({"type": "metrics_history", "data": _get_metrics_history()})
 
 
 def _emit_control_event(item):
@@ -1347,6 +1617,9 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_text(json.dumps({"type": "state_snapshot", "data": state}, ensure_ascii=False, default=str))
         metrics = _get_metrics_history()
         await websocket.send_text(json.dumps({"type": "metrics_history", "data": metrics}, ensure_ascii=False, default=str))
+        with lock:
+            runtime_logs = [_runtime_log_record(item) for item in logs[-500:]]
+        await websocket.send_text(json.dumps({"type": "runtime_logs", "data": runtime_logs}, ensure_ascii=False, default=str))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -1368,16 +1641,27 @@ async def report_metric(request: Request):
     return {"status": "success", "length": len(logs), "total_events": summary["total_events"]}
 
 @app.get("/logs")
-def get_logs(limit: int = 500, source: str = "", event_type: str = ""):
+def get_logs(limit: int = 500, source: str = "", event_type: str = "", level: str = "", category: str = "", regex: str = ""):
     with lock:
         data = logs
         if source:
             data = [x for x in data if x.get("source") == source]
         if event_type:
             data = [x for x in data if x.get("event_type") == event_type]
+        if level:
+            data = [x for x in data if _event_level(x) == level.upper()]
+        if category:
+            data = [x for x in data if _event_category(x) == category.lower()]
+        if regex:
+            try:
+                pattern = re.compile(regex, re.IGNORECASE)
+            except re.error as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
+            data = [x for x in data if pattern.search(_runtime_log_record(x)["line"])]
         if limit > 0:
             data = data[-limit:]
-    return {"status": "success", "count": len(data), "logs": data}
+        runtime_logs = [_runtime_log_record(x) for x in data]
+    return {"status": "success", "count": len(data), "logs": data, "runtime_logs": runtime_logs}
 
 
 @app.get("/summary")
@@ -1454,7 +1738,7 @@ async def training_start():
     _clear_monitor_state()
 
     config = _read_config()
-    result = await asyncio.to_thread(controller.start, config)
+    result = await asyncio.to_thread(controller.start, config, RUN_ID)
     if not result.get("ok"):
         code = 409 if result.get("reason") == "already_running" else 500
         raise HTTPException(status_code=code, detail=result)
