@@ -105,7 +105,7 @@
 - **客户端状态表**：实时显示每个客户端/节点的状态、进度、指标、网络流量
 - **事件日志**：滚动显示关键事件，按类型着色
 - **图表下载**：每个图表右上角提供"保存为图片"按钮
-- **自动保存**：训练结束时自动将图表保存到 `output/` 目录
+- **自动保存**：训练结束时自动将图表保存到本次运行目录 `logs/<运行时间>/`
 
 #### 新增 API 接口
 
@@ -118,14 +118,14 @@
 
 #### 自动保存的图表
 
-训练结束（正常完成、达到目标精度或手动停止）时，后端自动保存以下文件到 `output/` 目录：
+训练结束（正常完成、达到目标精度或手动停止）时，后端自动保存以下文件到本次运行目录 `logs/<运行时间>/`：
 
 | 文件 | 说明 |
 |------|------|
-| `output/loss_curve.png` | 训练/验证/测试 Loss 曲线 |
-| `output/accuracy_curve.png` | 训练/验证/测试 Accuracy 曲线 |
-| `output/client_comparison.png` | 各客户端 Loss/Accuracy 对比 |
-| `output/metrics.json` | 原始指标数据 |
+| `logs/<运行时间>/loss_curve.png` | 训练/验证/测试 Loss 曲线 |
+| `logs/<运行时间>/accuracy_curve.png` | 训练/验证/测试 Accuracy 曲线 |
+| `logs/<运行时间>/client_comparison.png` | 各客户端 Loss/Accuracy 对比 |
+| `logs/<运行时间>/metrics.json` | 原始指标数据 |
 
 ## 5. API 接口
 
