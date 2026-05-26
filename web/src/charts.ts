@@ -125,52 +125,13 @@ export function initCharts(state: DashboardState) {
     });
 
     state.onUpdate.push(() => updateCharts(state));
+    updateCharts(state);
 
     window.addEventListener('resize', () => {
         lossChart?.resize();
         accChart?.resize();
     });
 }
-
-const CLIENT_COLORS = ['#58a6ff', '#f0883e', '#a371f7', '#d2a8ff', '#79c0ff', '#ffa657'];
-
-function alignDataToRounds(sourceRounds: number[], sourceData: (number | null)[], targetRounds: number[]): (number | null)[] {
-    const result: (number | null)[] = [];
-    const dataMap = new Map<number, number | null>();
-    for (let i = 0; i < sourceRounds.length; i++) {
-        dataMap.set(sourceRounds[i], sourceData[i]);
-    }
-    for (const round of targetRounds) {
-        result.push(dataMap.has(round) ? dataMap.get(round)! : null);
-    }
-    return result;
-}
-
-function calculateAverage(perClient: Record<string, any>, metricKey: string, targetRounds: number[]): (number | null)[] {
-    const clients = Object.keys(perClient);
-    if (clients.length === 0) return targetRounds.map(() => null);
-
-    return targetRounds.map((round, idx) => {
-        let sum = 0;
-        let count = 0;
-        for (const cid of clients) {
-            const pc = perClient[cid];
-            const roundIdx = pc.rounds.indexOf(round);
-            if (roundIdx !== -1) {
-                const val = pc[metricKey][roundIdx];
-                if (val !== null && val !== undefined) {
-                    sum += val;
-                    count++;
-                }
-            }
-        }
-        return count > 0 ? sum / count : null;
-    });
-}
-
-// Store previous data to enable incremental updates
-let prevLossData: any = null;
-let prevAccData: any = null;
 
 function buildSeriesData(
     name: string,
@@ -203,112 +164,17 @@ function updateCharts(state: DashboardState) {
     if (!m.rounds.length) return;
 
     const roundLabels = m.rounds.map(String);
-    const isRingMode = state.topologyMode === 'ring';
 
-    // Build loss chart series
     const lossSeries: any[] = [];
     const accSeries: any[] = [];
 
-    if (isRingMode && Object.keys(m.per_client).length > 0) {
-        // Ring mode: calculate average of per-client metrics
-        const avgTrainLoss = calculateAverage(m.per_client, 'train_loss', m.rounds);
-        const avgValLoss = calculateAverage(m.per_client, 'val_loss', m.rounds);
-        const avgTrainAcc = calculateAverage(m.per_client, 'train_acc', m.rounds);
-        const avgValAcc = calculateAverage(m.per_client, 'val_acc', m.rounds);
+    lossSeries.push(buildSeriesData('Train Loss', m.train_loss, { width: 2 }, { color: '#58a6ff' }, 0));
+    lossSeries.push(buildSeriesData('Val Loss', m.val_loss, { width: 2, type: 'dashed' }, { color: '#f0883e' }, 1));
+    lossSeries.push(buildSeriesData('Test Loss', m.test_loss, { width: 2, type: 'dotted' }, { color: '#3fb950' }, 2));
 
-        lossSeries.push(buildSeriesData(
-            'Train Loss (Avg)',
-            avgTrainLoss,
-            { width: 2, color: '#58a6ff' },
-            { color: '#58a6ff' },
-            0
-        ));
-
-        lossSeries.push(buildSeriesData(
-            'Val Loss (Avg)',
-            avgValLoss,
-            { width: 2, type: 'dashed', color: '#f0883e' },
-            { color: '#f0883e' },
-            1
-        ));
-
-        lossSeries.push(buildSeriesData(
-            'Test Loss (Global)',
-            m.test_loss,
-            { width: 2, type: 'dotted', color: '#3fb950' },
-            { color: '#3fb950' },
-            2
-        ));
-
-        accSeries.push(buildSeriesData(
-            'Train Acc (Avg)',
-            avgTrainAcc,
-            { width: 2, color: '#58a6ff' },
-            { color: '#58a6ff' },
-            0
-        ));
-
-        accSeries.push(buildSeriesData(
-            'Val Acc (Avg)',
-            avgValAcc,
-            { width: 2, type: 'dashed', color: '#f0883e' },
-            { color: '#f0883e' },
-            1
-        ));
-
-        accSeries.push(buildSeriesData(
-            'Test Acc (Global)',
-            m.test_acc,
-            { width: 2, type: 'dotted', color: '#3fb950' },
-            { color: '#3fb950' },
-            2
-        ));
-    } else {
-        // Client-server mode: show global metrics only
-        lossSeries.push(buildSeriesData(
-            'Train Loss',
-            m.train_loss,
-            { width: 2 },
-            { color: '#58a6ff' },
-            0
-        ));
-        lossSeries.push(buildSeriesData(
-            'Val Loss',
-            m.val_loss,
-            { width: 2, type: 'dashed' },
-            { color: '#f0883e' },
-            1
-        ));
-        lossSeries.push(buildSeriesData(
-            'Test Loss',
-            m.test_loss,
-            { width: 2, type: 'dotted' },
-            { color: '#3fb950' },
-            2
-        ));
-
-        accSeries.push(buildSeriesData(
-            'Train Acc',
-            m.train_acc,
-            { width: 2 },
-            { color: '#58a6ff' },
-            0
-        ));
-        accSeries.push(buildSeriesData(
-            'Val Acc',
-            m.val_acc,
-            { width: 2, type: 'dashed' },
-            { color: '#f0883e' },
-            1
-        ));
-        accSeries.push(buildSeriesData(
-            'Test Acc',
-            m.test_acc,
-            { width: 2, type: 'dotted' },
-            { color: '#3fb950' },
-            2
-        ));
-    }
+    accSeries.push(buildSeriesData('Train Acc', m.train_acc, { width: 2 }, { color: '#58a6ff' }, 0));
+    accSeries.push(buildSeriesData('Val Acc', m.val_acc, { width: 2, type: 'dashed' }, { color: '#f0883e' }, 1));
+    accSeries.push(buildSeriesData('Test Acc', m.test_acc, { width: 2, type: 'dotted' }, { color: '#3fb950' }, 2));
 
     // Use notMerge: false to enable incremental updates
     // This allows ECharts to animate only the changed data
@@ -338,8 +204,4 @@ function updateCharts(state: DashboardState) {
         animationEasing: 'cubicOut',
         animationEasingUpdate: 'cubicOut',
     }, updateOption);
-
-    // Store current data for next comparison
-    prevLossData = { rounds: [...m.rounds], series: lossSeries };
-    prevAccData = { rounds: [...m.rounds], series: accSeries };
 }
