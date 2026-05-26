@@ -39,7 +39,7 @@ federated-learning/
 │
 ├── model.py                # 模型定义（CNN、SplitFed 模型）
 ├── data/splits/            # 数据文件存放目录（自动生成）
-└── logs/                   # 训练日志存放目录（自动生成）
+└── logs/<运行时间>/          # 单次运行日志与结果（自动生成）
 ```
 
 ## 快速开始
@@ -119,7 +119,7 @@ uv run python -m core.ring_node 3
 
 ### 5. 查看训练状态
 
-- **训练日志**：`logs/` 目录下的 `.log` 文件
+- **训练日志**：`logs/<运行时间>/` 目录下的 `.log`、`.jsonl`、`.json` 和图表文件，例如 `logs/202605261933/`
 - **监控面板**：http://127.0.0.1:9000
 - **API 接口**：
   - `GET /health` - 健康检查
