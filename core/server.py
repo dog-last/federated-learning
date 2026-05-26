@@ -14,7 +14,10 @@ from model import get_model
 from utils.monitoring import MonitorReporter, compact_topology, payload_label
 
 
-logging.basicConfig(level=logging.WARNING, format="%(asctime)s - SERVER - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("FED_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s - SERVER - %(levelname)s - %(message)s",
+)
 
 
 class Server:
@@ -86,6 +89,7 @@ class Server:
         self.round_updates = {}
         self.current_round = 0
         self.stop_event = threading.Event()
+        self.stop_reason = None
         self.min_clients = int(self.config.get("network", {}).get("min_clients", 1))
         self.dropped_clients = set()
         self.net_stats = {
@@ -187,6 +191,20 @@ class Server:
         if extra:
             payload.update(extra)
         self.monitor.post("network_io", **payload)
+        logging.log(
+            logging.DEBUG if direction in {"out", "in"} else logging.INFO,
+            "net direction=%s peer=%s msg=%s label=%s payload=%dB tx=%dB rx=%dB tx_msg=%d rx_msg=%d round=%s",
+            direction,
+            peer or "-",
+            message_type,
+            payload["payload_label"],
+            int(payload_bytes),
+            int(totals["bytes_sent_total"]),
+            int(totals["bytes_recv_total"]),
+            int(totals["messages_sent_total"]),
+            int(totals["messages_recv_total"]),
+            round_id if round_id is not None else "-",
+        )
 
     def _send(self, conn, payload, peer="", round_id=None, extra=None):
         ok, size = self.communicator.send_data(conn, payload)
@@ -546,10 +564,13 @@ class Server:
                     "round_aborted",
                     mode="centralized",
                     round=round_id,
+                    reason="insufficient_client_updates",
                     received_updates=len(update_list),
+                    expected_count=self.num_clients,
                     min_clients=self.min_clients,
                     dropped_clients=dropped,
                 )
+                self.stop_reason = "insufficient_client_updates"
                 return 0.0
 
         agg = self._aggregate_weighted(update_list)
@@ -646,10 +667,13 @@ class Server:
                     "round_aborted",
                     mode="splitfed",
                     round=round_id,
+                    reason="insufficient_client_updates",
                     received_updates=len(update_list),
+                    expected_count=self.num_clients,
                     min_clients=self.min_clients,
                     dropped_clients=dropped,
                 )
+                self.stop_reason = "insufficient_client_updates"
                 return 0.0
 
         agg = self._aggregate_weighted(update_list)
@@ -706,6 +730,7 @@ class Server:
         logging.info("All clients registered. Start training.")
 
         try:
+            completed_all_rounds = True
             for round_id in range(1, self.max_epochs + 1):
                 self.current_round = round_id
                 started = time.time()
@@ -731,7 +756,11 @@ class Server:
                     messages_recv=net_delta["messages_recv"],
                 )
                 logging.info("Round %d finished in %.2fs", round_id, elapsed)
+                if self.stop_reason:
+                    completed_all_rounds = False
+                    break
                 if test_acc >= self.target_accuracy:
+                    self.stop_reason = "target_accuracy_reached"
                     logging.info("Target accuracy reached: %.4f >= %.4f", test_acc, self.target_accuracy)
                     self.monitor.post(
                         "target_reached",
@@ -740,14 +769,17 @@ class Server:
                         target_accuracy=self.target_accuracy,
                         actual_accuracy=test_acc,
                     )
+                    completed_all_rounds = False
                     break
         finally:
+            if self.stop_reason is None:
+                self.stop_reason = "rounds_completed" if completed_all_rounds else "stopped"
             self.stop_event.set()
-            self._broadcast({"type": "shutdown", "reason": "training_finished"})
+            self._broadcast({"type": "shutdown", "reason": self.stop_reason})
             self.monitor.post(
                 "shutdown",
                 mode=self.mode,
-                reason="training_finished",
+                reason=self.stop_reason,
                 net_totals=self._snapshot_net(),
                 active_clients=sorted(self.active_clients.keys()),
             )
