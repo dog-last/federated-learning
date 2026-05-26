@@ -20,13 +20,22 @@ def _logs_dir(root):
     return path
 
 
-def _open_role_log(root, role):
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    path = os.path.join(_logs_dir(root), f"{role}-{stamp}.log")
+def _new_run_id():
+    return time.strftime("%Y%m%d%H%M%S")
+
+
+def _run_logs_dir(root, run_id):
+    path = os.path.join(_logs_dir(root), run_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _open_role_log(root, run_id, role):
+    path = os.path.join(_run_logs_dir(root, run_id), f"{role}.log")
     handle = open(path, "a", encoding="utf-8")
     handle.write(
         f"{time.strftime('%Y-%m-%d %H:%M:%S')} - LOG - INFO - "
-        f"Opened process log for role={role}\n"
+        f"Opened process log for role={role}, run_id={run_id}\n"
     )
     handle.flush()
     return handle
@@ -104,6 +113,8 @@ def _wait_monitor_or_raise(config, monitor_proc, timeout: float = 10.0):
 def start_experiment(config_path=None):
     root = _project_root()
     py_bin = _python_bin()
+    run_id = _new_run_id()
+    run_log_dir = _run_logs_dir(root, run_id)
     log_handles = []
 
     if config_path is None:
@@ -118,7 +129,12 @@ def start_experiment(config_path=None):
     env = os.environ.copy()
     env["PYTHONPATH"] = root
     env["FED_CONFIG_PATH"] = os.path.abspath(config_path)
+    env["FED_RUN_ID"] = run_id
+    env["FED_LOG_DIR"] = run_log_dir
+    env.setdefault("FED_LOG_LEVEL", "INFO")
 
+    monitor_log = _open_role_log(root, run_id, "monitor")
+    log_handles.append(monitor_log)
     monitor_proc = subprocess.Popen(
         [
             py_bin,
@@ -135,6 +151,8 @@ def start_experiment(config_path=None):
         ],
         env=env,
         cwd=root,
+        stdout=monitor_log,
+        stderr=subprocess.STDOUT,
     )
 
     _wait_monitor_or_raise(config, monitor_proc, timeout=10.0)
@@ -152,22 +170,24 @@ def start_experiment(config_path=None):
         data_prepare=data_prepare,
         monitor_process=_proc_info(monitor_proc, "monitor"),
         config_path=config_path,
+        run_id=run_id,
+        log_dir=run_log_dir,
     )
 
     if mode == "ring":
-        _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
+        _start_ring_mode(root, run_id, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
     else:
-        _start_centralized_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
+        _start_centralized_mode(root, run_id, py_bin, env, config, config_path, reporter, log_handles, monitor_proc)
 
 
-def _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
+def _start_ring_mode(root, run_id, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
     """Launch decentralized ring topology: 3 ring nodes, no central server."""
     nodes = config["topology"]["nodes"]
     node_procs = []
 
     for node_cfg in nodes:
         node_id = str(node_cfg["id"])
-        node_log = _open_role_log(root, f"ring-node-{node_id}")
+        node_log = _open_role_log(root, run_id, f"ring-node-{node_id}")
         log_handles.append(node_log)
         proc = subprocess.Popen(
             [py_bin, "-m", "core.ring_node", node_id, "--config", config_path, "--data-path", root],
@@ -216,9 +236,9 @@ def _start_ring_mode(root, py_bin, env, config, config_path, reporter, log_handl
         _graceful_stop(monitor_proc, wait_seconds=0.5)
 
 
-def _start_centralized_mode(root, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
+def _start_centralized_mode(root, run_id, py_bin, env, config, config_path, reporter, log_handles, monitor_proc):
     """Launch centralized or splitfed mode: 1 server + N clients."""
-    server_log = _open_role_log(root, "server")
+    server_log = _open_role_log(root, run_id, "server")
     log_handles.append(server_log)
     server_proc = subprocess.Popen(
         [py_bin, "-m", "core.server", "--config", config_path, "--data-path", root],
@@ -234,7 +254,7 @@ def _start_centralized_mode(root, py_bin, env, config, config_path, reporter, lo
     client_procs = []
     for client in config['topology']['clients']:
         cid = client['id']
-        client_log = _open_role_log(root, f"client-{cid}")
+        client_log = _open_role_log(root, run_id, f"client-{cid}")
         log_handles.append(client_log)
         proc = subprocess.Popen(
             [py_bin, "-m", "core.client", cid, "--config", config_path, "--data-path", root],
