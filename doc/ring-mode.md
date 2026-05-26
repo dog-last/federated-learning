@@ -208,10 +208,10 @@ Ring 模式有专门的监控事件类型：
 
 ```bash
 # 实时查看节点 1 日志
-tail -f logs/ring-node-1-*.log
+tail -f logs/<运行时间>/ring-node-1.log
 
 # 查看所有节点日志
-tail -f logs/ring-node-*.log
+tail -f logs/<运行时间>/ring-node-*.log
 ```
 
 ### 网络问题调试
