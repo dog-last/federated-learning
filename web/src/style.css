@@ -164,25 +164,76 @@ body {
     min-height: 0;
 }
 
-/* Event Log */
+/* Runtime Log */
 .events-card {
-    flex: 0 0 400px;
-    overflow: hidden;
+    flex: 0 0 440px;
+    overflow: visible;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    position: relative;
+    z-index: 20;
 }
 
-.events-card .card-title {
+.log-header {
     flex-shrink: 0;
+    border-bottom: 1px solid var(--border-color);
+    position: relative;
+    z-index: 30;
+}
+
+.log-header .card-title {
+    border-bottom: none;
+    padding-bottom: 6px;
+}
+
+.log-controls {
+    display: grid;
+    grid-template-columns: 120px 150px 120px 1fr;
+    gap: 8px;
+    padding: 0 12px 10px;
+}
+
+.log-controls select,
+.log-controls input {
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background: rgba(13, 17, 23, 0.9);
+    color: var(--text-primary);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    outline: none;
+    position: relative;
+    z-index: 31;
+}
+
+.log-controls select:focus {
+    z-index: 1000;
+}
+
+.log-controls select option {
+    background: var(--bg-card);
+    color: var(--text-primary);
+}
+
+.log-controls input.invalid {
+    border-color: var(--accent-red);
+    color: var(--accent-red);
 }
 
 .event-log {
     flex: 1;
+    min-height: 0;
+    overflow-x: auto;
     overflow-y: auto;
-    padding: 6px 12px;
+    padding: 8px 12px;
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.5;
+    user-select: text;
 }
 
 /* Cards */
@@ -199,6 +250,10 @@ body {
 .card:hover {
     border-color: rgba(88, 166, 255, 0.2);
     background: var(--bg-card-hover);
+}
+
+.card.events-card {
+    overflow: visible;
 }
 
 .card-title {
@@ -369,16 +424,51 @@ body {
 }
 
 .event-line {
+    display: grid;
+    grid-template-columns: 58px 78px minmax(0, 1fr);
+    gap: 8px;
     padding: 2px 0;
     color: var(--text-primary);
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    animation: fadeIn 0.2s ease;
+    width: max-content;
+    min-width: 100%;
+    will-change: opacity, transform;
+}
+
+.event-line-new {
+    animation: logAppend 180ms ease-out;
+}
+
+.event-line .log-level,
+.event-line .log-category {
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.event-line .log-category {
+    color: var(--text-secondary);
+}
+
+.event-line .log-body {
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.event-line.level-error .log-body {
+    color: var(--accent-red);
+}
+
+.event-line.level-critical .log-body {
+    color: var(--accent-yellow);
 }
 
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes logAppend {
+    from { opacity: 0; transform: translateY(3px); }
     to { opacity: 1; transform: translateY(0); }
 }
 
@@ -414,5 +504,8 @@ body {
     }
     .charts-grid {
         grid-template-columns: 1fr;
+    }
+    .log-controls {
+        grid-template-columns: 1fr 1fr;
     }
 }
