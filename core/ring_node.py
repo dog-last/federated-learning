@@ -22,7 +22,7 @@ from utils.monitoring import MonitorReporter, payload_label
 
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=getattr(logging, os.environ.get("FED_LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s - RING-%(name)s - %(levelname)s - %(message)s",
 )
 
@@ -230,6 +230,7 @@ class RingNode:
             "direction": direction,
             "node_id": self.node_id,
             "message_type": message_type,
+            "payload_label": payload_label(message_type),
             "payload_bytes": int(payload_bytes),
             "bytes_sent_total": int(self.net_stats["bytes_sent"]),
             "bytes_recv_total": int(self.net_stats["bytes_recv"]),
@@ -240,6 +241,17 @@ class RingNode:
         if extra:
             payload.update(extra)
         self.monitor.post("network_io", **payload)
+        self.logger.debug(
+            "net direction=%s msg=%s label=%s payload=%dB tx=%dB rx=%dB tx_msg=%d rx_msg=%d",
+            direction,
+            message_type,
+            payload["payload_label"],
+            int(payload_bytes),
+            int(payload["bytes_sent_total"]),
+            int(payload["bytes_recv_total"]),
+            int(payload["messages_sent_total"]),
+            int(payload["messages_recv_total"]),
+        )
 
     def _send_to(self, sock, message_dict, peer_label=""):
         ok, size = self.communicator.send_data(sock, message_dict)
