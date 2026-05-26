@@ -14,7 +14,10 @@ from model import get_model
 from utils.monitoring import MonitorReporter, payload_label
 
 
-logging.basicConfig(level=logging.WARNING, format="%(asctime)s - CLIENT %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("FED_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s - CLIENT %(name)s - %(levelname)s - %(message)s",
+)
 
 
 class Client:
@@ -202,6 +205,18 @@ class Client:
         if extra:
             payload.update(extra)
         self.monitor.post("network_io", **payload)
+        self.logger.debug(
+            "net direction=%s peer=server msg=%s label=%s payload=%dB tx=%dB rx=%dB tx_msg=%d rx_msg=%d round=%s",
+            direction,
+            message_type,
+            payload["payload_label"],
+            int(payload_bytes),
+            int(payload["bytes_sent_total"]),
+            int(payload["bytes_recv_total"]),
+            int(payload["messages_sent_total"]),
+            int(payload["messages_recv_total"]),
+            round_id if round_id is not None else "-",
+        )
 
     def _send(self, payload, round_id=None, extra=None):
         ok, size = self.communicator.send_data(self.conn, payload)
