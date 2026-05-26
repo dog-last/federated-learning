@@ -26,19 +26,30 @@ class TrainingController:
         self._proc_log_handles = []
         self._watcher = None
         self._manual_stop_requested = False
+        self._run_id: Optional[str] = None
+        self._run_log_dir: Optional[str] = None
 
     def _logs_dir(self) -> str:
         path = os.path.join(self.project_root, "logs")
         os.makedirs(path, exist_ok=True)
         return path
 
+    def _new_run_id(self) -> str:
+        return time.strftime("%Y%m%d%H%M%S")
+
+    def _run_logs_dir(self) -> str:
+        if not self._run_id:
+            self._run_id = self._new_run_id()
+        self._run_log_dir = os.path.join(self._logs_dir(), self._run_id)
+        os.makedirs(self._run_log_dir, exist_ok=True)
+        return self._run_log_dir
+
     def _open_role_log(self, role: str):
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(self._logs_dir(), f"{role}-{stamp}.log")
+        path = os.path.join(self._run_logs_dir(), f"{role}.log")
         handle = open(path, "a", encoding="utf-8")
         handle.write(
             f"{time.strftime('%Y-%m-%d %H:%M:%S')} - LOG - INFO - "
-            f"Opened process log for role={role}\n"
+            f"Opened process log for role={role}, run_id={self._run_id}\n"
         )
         handle.flush()
         self._proc_log_handles.append(handle)
@@ -141,7 +152,7 @@ class TrainingController:
                 return json.load(f)
         return config
 
-    def start(self, config: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    def start(self, config: Union[str, Dict[str, Any]], run_id: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             if self._state in {"running", "starting"}:
                 state = self._state
@@ -160,11 +171,16 @@ class TrainingController:
                         "server": self._proc_info(None, "server"),
                         "clients": [],
                         "last_error": last_error,
+                        "run_id": self._run_id,
+                        "log_dir": self._run_log_dir,
                     },
                 }
             self._state = "starting"
             self._last_error = None
             self._manual_stop_requested = False
+            self._run_id = run_id or self._new_run_id()
+            self._run_log_dir = os.path.join(self._logs_dir(), self._run_id)
+            os.makedirs(self._run_log_dir, exist_ok=True)
 
         try:
             resolved = self._resolve_config(config)
@@ -182,6 +198,9 @@ class TrainingController:
             self._ensure_data(resolved)
             env = os.environ.copy()
             env["PYTHONPATH"] = self.project_root
+            env["FED_RUN_ID"] = self._run_id or ""
+            env["FED_LOG_DIR"] = self._run_log_dir or self._run_logs_dir()
+            env.setdefault("FED_LOG_LEVEL", "INFO")
             mode = str(resolved.get("experiment", {}).get("mode", "centralized"))
             self._ring_mode = mode == "ring"
 
@@ -239,6 +258,8 @@ class TrainingController:
                     "mode": mode,
                     "server": self._proc_info(server_proc, "server"),
                     "clients": [self._proc_info(p, "client") for p in client_procs],
+                    "run_id": self._run_id,
+                    "log_dir": self._run_log_dir,
                 }
             )
             return {"ok": True, "status": self.status()}
@@ -261,6 +282,8 @@ class TrainingController:
                     "server": self._proc_info(self._server_proc, "server"),
                     "clients": [self._proc_info(p, "client") for p in self._client_procs],
                     "last_error": self._last_error,
+                    "run_id": self._run_id,
+                    "log_dir": self._run_log_dir,
                 }
                 return {"ok": True, "status": status}
             self._state = "stopping"
@@ -311,4 +334,6 @@ class TrainingController:
             "server": self._proc_info(server_proc, "server"),
             "clients": [self._proc_info(p, "client") for p in client_procs],
             "last_error": last_error,
+            "run_id": self._run_id,
+            "log_dir": self._run_log_dir,
         }
