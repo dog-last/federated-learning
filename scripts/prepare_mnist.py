@@ -4,10 +4,62 @@ Prepare federated MNIST dataset for split learning / centralized training.
 Saves data in format compatible with core/client.py and core/server.py.
 """
 import os
+import time
 import torch
 import numpy as np
 from torchvision import datasets, transforms
-from pathlib import Path
+
+
+MNIST_MIRRORS = [
+    "https://storage.googleapis.com/cvdf-datasets/mnist/",
+    "https://ossci-datasets.s3.amazonaws.com/mnist/",
+    "http://yann.lecun.com/exdb/mnist/",
+]
+
+
+def _configure_mnist_mirrors():
+    env_mirrors = [
+        mirror.strip()
+        for mirror in os.environ.get("MNIST_MIRRORS", "").split(",")
+        if mirror.strip()
+    ]
+    existing = list(getattr(datasets.MNIST, "mirrors", []))
+    mirrors = []
+    for mirror in [*env_mirrors, *MNIST_MIRRORS, *existing]:
+        if mirror and mirror not in mirrors:
+            mirrors.append(mirror)
+    if mirrors and hasattr(datasets.MNIST, "mirrors"):
+        datasets.MNIST.mirrors = mirrors
+
+
+def _load_mnist(root_dir, train, transform, retries=3):
+    _configure_mnist_mirrors()
+    split_name = "training" if train else "test"
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return datasets.MNIST(
+                root=root_dir,
+                train=train,
+                download=True,
+                transform=transform,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt >= retries:
+                break
+            wait_seconds = attempt * 2
+            print(
+                f"[MNIST] {split_name} download failed "
+                f"(attempt {attempt}/{retries}); retrying in {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+    mirrors = ", ".join(getattr(datasets.MNIST, "mirrors", MNIST_MIRRORS))
+    raise RuntimeError(
+        f"Failed to download MNIST {split_name} split after {retries} attempts. "
+        f"Tried mirrors: {mirrors}"
+    ) from last_error
 
 
 def prepare_mnist_federated(root_dir="./data", num_clients=3, seed=42):
@@ -40,20 +92,10 @@ def prepare_mnist_federated(root_dir="./data", num_clients=3, seed=42):
     
     # 1. Load full MNIST training and test datasets
     print("[MNIST] Loading training data...")
-    full_train_dataset = datasets.MNIST(
-        root=root_dir,
-        train=True,
-        download=True,
-        transform=transform
-    )
+    full_train_dataset = _load_mnist(root_dir, train=True, transform=transform)
     
     print("[MNIST] Loading test data...")
-    full_test_dataset = datasets.MNIST(
-        root=root_dir,
-        train=False,
-        download=True,
-        transform=transform
-    )
+    full_test_dataset = _load_mnist(root_dir, train=False, transform=transform)
     
     # 2. Create indices grouped by class for non-IID distribution
     print("[MNIST] Organizing data by class...")
