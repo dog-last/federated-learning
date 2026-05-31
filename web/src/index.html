@@ -59,7 +59,28 @@
                     </div>
                 </div>
                 <div class="card events-card">
-                    <h2 class="card-title">Key Events</h2>
+                    <div class="log-header">
+                        <h2 class="card-title">Key Events</h2>
+                        <div class="log-controls">
+                            <select id="log-level-filter" aria-label="Log level">
+                                <option value="">All Levels</option>
+                                <option value="DEBUG">Debug</option>
+                                <option value="INFO" selected>Info</option>
+                                <option value="ERROR">Error</option>
+                                <option value="CRITICAL">Critical</option>
+                            </select>
+                            <select id="log-category-filter" aria-label="Log category">
+                                <option value="">All Categories</option>
+                                <option value="network">Network</option>
+                                <option value="training">Training</option>
+                                <option value="control">Control</option>
+                                <option value="topology">Topology</option>
+                                <option value="system">System</option>
+                            </select>
+                            <input id="log-source-filter" type="search" placeholder="Source" aria-label="Log source">
+                            <input id="log-regex-filter" type="search" placeholder="Regex" aria-label="Log regex">
+                        </div>
+                    </div>
                     <div class="event-log" id="event-log"></div>
                 </div>
             </div>
