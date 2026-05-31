@@ -43,9 +43,10 @@ class Client:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        # Rule: data directory must reside under the project root containing `manager.py`.
-        # Allow tests or callers to override by passing `project_root` explicitly.
-        self.project_root = project_root
+        # Default data lookup to the directory containing the resolved config.
+        # manager.py and TrainingController pass the repository root explicitly;
+        # this fallback keeps direct module use and tests with temporary configs working.
+        self.project_root = os.path.abspath(project_root) if project_root is not None else os.path.dirname(os.path.abspath(config_path))
         self.client_id = client_id
         preferred_device = self.config.get("experiment", {}).get("device", "auto")
         self.device = self._select_device(preferred_device)

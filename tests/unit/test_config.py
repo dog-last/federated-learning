@@ -30,4 +30,4 @@ def test_config_structure():
 def test_config_modes():
     with open(PROJECT_ROOT / 'config.json') as f:
         config = json.load(f)
-    assert config['experiment']['mode'] in ('centralized', 'splitfed')
+    assert config['experiment']['mode'] in ('centralized', 'splitfed', 'ring')
