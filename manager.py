@@ -155,7 +155,8 @@ def start_experiment(config_path=None):
         stderr=subprocess.STDOUT,
     )
 
-    _wait_monitor_or_raise(config, monitor_proc, timeout=10.0)
+    monitor_ready_timeout = float(os.environ.get("FED_MONITOR_READY_TIMEOUT", "10.0"))
+    _wait_monitor_or_raise(config, monitor_proc, timeout=monitor_ready_timeout)
     reporter = MonitorReporter(
         config['monitoring']['api_host'],
         int(config['monitoring']['api_port']),

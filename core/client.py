@@ -464,21 +464,15 @@ class Client:
 
         train_loss = loss_sum / max(total, 1)
         train_acc = correct / max(total, 1)
-        val_loss, val_acc = self._eval_split(self.val_loader)
-        test_loss, test_acc = self._eval_split(self.test_loader)
 
         self.report_metric(
             {
                 "source": self.client_id,
                 "mode": "splitfed",
                 "round": round_id,
-                "type": "local_eval",
+                "type": "local_train",
                 "train_loss": train_loss,
                 "train_acc": train_acc,
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-                "test_loss": test_loss,
-                "test_acc": test_acc,
             }
         )
 
@@ -490,10 +484,6 @@ class Client:
             "num_samples": len(self.train_loader.dataset),
             "train_loss": train_loss,
             "train_acc": train_acc,
-            "val_loss": val_loss,
-            "val_acc": val_acc,
-            "test_loss": test_loss,
-            "test_acc": test_acc,
         }
         self.monitor.post(
             "local_round_done",
@@ -506,10 +496,8 @@ class Client:
             test_samples=len(self.test_loader.dataset),
             train_loss=train_loss,
             train_acc=train_acc,
-            val_loss=val_loss,
-            val_acc=val_acc,
-            test_loss=test_loss,
-            test_acc=test_acc,
+            local_eval=False,
+            eval_note="SplitFed validation/test metrics are reported by server global evaluation.",
         )
         return payload
 

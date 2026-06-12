@@ -390,11 +390,17 @@ class TestSplitFedTraining:
         with patch.object(client_splitfed, '_recv', side_effect=responses):
             with patch.object(client_splitfed, '_send'):
                 with patch.object(client_splitfed.monitor, 'post'):
-                    result = client_splitfed._train_splitfed_round(msg)
+                    with patch.object(client_splitfed, '_eval_split') as mock_eval:
+                        result = client_splitfed._train_splitfed_round(msg)
         
         assert result["type"] == "split_update"
         assert result["round"] == 1
         assert "weights" in result
+        assert "val_loss" not in result
+        assert "val_acc" not in result
+        assert "test_loss" not in result
+        assert "test_acc" not in result
+        mock_eval.assert_not_called()
 
 
 class TestMainEntryPoint:

@@ -354,7 +354,7 @@ class Server:
                         num_samples=int(msg.get("num_samples", 0)),
                         train_loss=float(msg.get("train_loss", 0.0)),
                         train_acc=float(msg.get("train_acc", 0.0)),
-                        test_acc=float(msg.get("test_acc", 0.0)),
+                        test_acc=msg.get("test_acc"),
                     )
                     continue
 
@@ -688,10 +688,9 @@ class Server:
         if total_samples > 0:
             train_loss = sum(float(x.get("train_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
             train_acc = sum(float(x.get("train_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
-            val_loss = sum(float(x.get("val_loss", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
-            val_acc = sum(float(x.get("val_acc", 0.0)) * int(x.get("num_samples", 0)) for x in update_list) / total_samples
         else:
-            train_loss = train_acc = val_loss = val_acc = None
+            train_loss = train_acc = None
+        val_loss = val_acc = None
         
         self.report_metric(
             {

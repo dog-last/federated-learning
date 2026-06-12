@@ -348,11 +348,26 @@ class TestServerRunRound:
                 "client_1": {
                     "weights": {k: v.clone() for k, v in server_splitfed.global_client_model.state_dict().items()},
                     "num_samples": 10,
+                    "train_loss": 0.5,
+                    "train_acc": 0.8,
                 }
             }):
                 with patch.object(server_splitfed.global_client_model, 'load_state_dict'):
-                    acc = server_splitfed._run_round_splitfed(1)
-                    assert isinstance(acc, float)
+                    with patch.object(server_splitfed.monitor, 'post') as mock_post:
+                        acc = server_splitfed._run_round_splitfed(1)
+                        assert isinstance(acc, float)
+
+        round_end_calls = [
+            call for call in mock_post.call_args_list
+            if call.args and call.args[0] == "round_end"
+        ]
+        assert round_end_calls
+        round_end_payload = round_end_calls[-1].kwargs
+        assert round_end_payload["mode"] == "splitfed"
+        assert round_end_payload["val_loss"] is None
+        assert round_end_payload["val_acc"] is None
+        assert isinstance(round_end_payload["test_loss"], float)
+        assert isinstance(round_end_payload["test_acc"], float)
 
 
 class TestServerAcceptLoop:
