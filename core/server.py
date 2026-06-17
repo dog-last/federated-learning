@@ -468,7 +468,18 @@ class Server:
                 remain = deadline - time.time()
                 if remain <= 0:
                     break
-                self.update_cv.wait(timeout=remain)
+                self.update_cv.wait(timeout=min(remain, 1.0))
+                got_count = len(self.round_updates.get(round_id, {}))
+                self.monitor.post(
+                    "round_wait_progress",
+                    mode=self.mode,
+                    round=round_id,
+                    wait_seconds=time.time() - started,
+                    received_count=got_count,
+                    expected_count=self.num_clients,
+                    clients=sorted(self.round_updates.get(round_id, {}).keys()),
+                    timeout_seconds=self.timeout,
+                )
             got = dict(self.round_updates.get(round_id, {}))
 
         # Identify dropped (straggler) clients

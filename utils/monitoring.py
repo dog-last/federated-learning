@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -47,8 +48,11 @@ class MonitorReporter:
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=self.timeout):
-            # Fail fast: monitoring channel errors should surface immediately.
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                return
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            logging.warning("Monitor event dropped: source=%s event=%s error=%s", self.source, event_type, exc)
             return
 
     def post_best_effort(self, event_type: str, timeout: Optional[float] = None, **fields: Any) -> bool:
