@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import json
 import time
+import urllib.error
 
 from utils.monitoring import payload_label, MonitorReporter, compact_topology
 
@@ -79,6 +80,12 @@ class TestMonitorReporter:
             assert reporter.session_seq == 2
             assert result2["seq"] == 2
             assert result2["number"] == 42
+
+    def test_post_ignores_monitor_transport_failure(self):
+        reporter = MonitorReporter("127.0.0.1", 8080, "test_source")
+        with patch("utils.monitoring.urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+            assert reporter.post("test_event", extra_field="value") is None
+        assert reporter.session_seq == 1
 
 
 class TestCompactTopology:

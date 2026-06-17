@@ -222,7 +222,7 @@ def _event_category(item):
         return str(item["category"]).lower()
     if event_type in {"network_io", "send_ack", "recv_ack", "round_transport", "ring_send", "ring_recv"}:
         return "network"
-    if event_type in {"round_start", "round_end", "local_round_done", "batch_progress", "metric", "ring_round_start", "ring_round_end", "ring_local_train_done", "ring_global_eval"}:
+    if event_type in {"round_start", "round_end", "round_wait_progress", "local_round_done", "batch_progress", "metric", "ring_round_start", "ring_round_end", "ring_local_train_done", "ring_global_eval"}:
         return "training"
     if event_type in {"manager_start", "manager_stop", "manager_stopping", "process_spawn", "training_started", "training_stopped", "training_start_requested", "training_stop_requested", "shutdown"}:
         return "control"
