@@ -264,6 +264,10 @@ uv run pytest --cov=core --cov=utils --cov=scripts --cov-report=term-missing
 4. **端口占用**：确保配置的端口未被占用
 5. **调试模式**：设置 `"render_mode": "plain"` 可禁用实时渲染，便于查看原始日志
 
+## 演示视频
+
+演示视频见https://pan.sjtu.edu.cn/web/share/9a7fc5710b2a7ba5b0b9a556181933ad
+
 ## 常见问题
 
 ### Q: 如何添加新的客户端？
