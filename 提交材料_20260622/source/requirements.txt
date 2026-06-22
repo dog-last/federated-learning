@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+rich
+torch
+torchvision
+numpy
