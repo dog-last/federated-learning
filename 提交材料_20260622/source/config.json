@@ -1,0 +1,53 @@
+{
+    "experiment": {
+        "mode": "centralized",
+        "global_epochs": 10,
+        "local_epochs": 1,
+        "seed": 42,
+        "target_accuracy": 0.99,
+        "dataset_params": {
+            "batch_size": 64,
+            "num_workers": 0,
+            "val_ratio": 0.1,
+            "test_ratio": 0.1,
+            "max_train_samples_per_client": 4000
+        },
+        "optimization": {
+            "client_lr": 0.01,
+            "server_lr": 0.01,
+            "momentum": 0.9,
+            "weight_decay": 0.0005
+        }
+    },
+    "topology": {
+        "server": {
+            "host": "127.0.0.1",
+            "port": 8000
+        },
+        "clients": [
+            {"id": "client_1", "host": "127.0.0.1", "port": 8001},
+            {"id": "client_2", "host": "127.0.0.1", "port": 8002},
+            {"id": "client_3", "host": "127.0.0.1", "port": 8003}
+        ],
+        "nodes": [
+            {"id": 1, "host": "127.0.0.1", "port": 8101},
+            {"id": 2, "host": "127.0.0.1", "port": 8102},
+            {"id": 3, "host": "127.0.0.1", "port": 8103}
+        ]
+    },
+    "network": {
+        "stragglers": {
+            "client_1": {"delay": 0.5, "drop_rate": 0.0},
+            "client_2": {"delay": 2.0, "drop_rate": 0.1},
+            "client_3": {"delay": 8.0, "drop_rate": 0.6}
+        },
+        "server_timeout": 300.0,
+        "min_clients": 1,
+        "compression": false
+    },
+    "monitoring": {
+        "api_host": "127.0.0.1",
+        "api_port": 9000,
+        "render_mode": "auto"
+    }
+}
